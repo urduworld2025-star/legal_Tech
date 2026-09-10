@@ -339,6 +339,55 @@ treat the Render/PaaS cost as directionally similar rather than identical,
 since the RAM this app needs (for two loaded transformer models) is the
 main cost driver either way, not the platform choice.
 
+### Alternative: shared cPanel / LiteSpeed hosting
+
+The live client deployment runs on shared cPanel hosting (CloudLinux +
+LiteSpeed), not Render. This path is fiddlier but needs no card and no VPS.
+Key facts learned doing it, so the next deploy is faster:
+
+- **cPanel's "Setup Python App" (Phusion Passenger) cannot run this app.**
+  Passenger is WSGI-only; FastAPI is ASGI, and the `a2wsgi` bridge
+  (`passenger_wsgi.py`) silently hangs inside LiteSpeed's LSAPI worker.
+  Instead, run real uvicorn as a standalone background process and reverse-proxy
+  to it from `.htaccess`:
+  - `~/legalintel/` — the repo (via cPanel Git Version Control). `chmod 755
+    ~/legalintel` (cPanel creates it `700`; the web server can't traverse it).
+  - Virtualenv (Python 3.12): `pip install --only-binary=:all: -r
+    requirements.txt` then `pip install -e .` — `/tmp` is mounted `noexec` so
+    any source build fails; `--only-binary` forces wheels.
+  - `~/legalintel/.env` holds all config (uvicorn started via `nohup` does
+    **not** inherit cPanel's Python-App env vars): `JWT_SECRET_KEY`,
+    `COURTLISTENER_API_TOKEN`, `CLAUSE_MODEL_DIR`,
+    `DOCUMENT_CLASSIFICATION_MODEL_DIR`, `HF_TOKEN`, `DB_PATH`, and the four
+    `*_NUM_THREADS=1` vars (OpenBLAS otherwise spawns a thread per host core
+    and segfaults under the account's process limit).
+  - `~/legalintel/keepalive.sh` — `curl -sf http://127.0.0.1:30001/health ||
+    nohup .../bin/uvicorn app.main:app --host 127.0.0.1 --port 30001
+    --workers 1 >> uvicorn.log 2>&1 &`. Cron: `*/3 * * * *
+    /home/<acct>/legalintel/keepalive.sh` (shared hosting has no systemd).
+  - `~/public_html/<app-path>/.htaccess` — the API proxy, replacing the
+    CloudLinux-generated Passenger block (keep a `.htaccess.passenger` backup):
+    ```
+    RewriteEngine On
+    RewriteRule ^(.*)$ http://127.0.0.1:30001/$1 [P,L]
+    ```
+- **Frontend** builds locally (server has no Node): `VITE_API_BASE_URL=<public
+  API URL>` then `npm run build`. Transfer `frontend/dist/` to the server via
+  a throwaway git branch (`git add -f frontend/dist` past `.gitignore`, push,
+  then `git archive <branch> frontend/dist | tar -x` on the server) and copy
+  its contents into `~/public_html/`. Its `.htaccess` there does SPA fallback
+  to `index.html` and **must** exclude the API path so the proxy still wins:
+  ```
+  RewriteEngine On
+  RewriteCond %{REQUEST_URI} !^/<app-path>/
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+  RewriteRule ^ /index.html [L]
+  ```
+- **numpy is pinned to `1.26.4`** in `requirements.txt` — numpy 2.x's SIMD
+  dispatcher crashes on CloudLinux/CageFS. Deployment target must be Python
+  3.10–3.12 (1.26.4 has no 3.13 wheel).
+
 ## Notes
 
 - All model fine-tuning happens in Google Colab, not locally (see
