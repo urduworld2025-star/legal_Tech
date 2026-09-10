@@ -1,11 +1,9 @@
 RewriteEngine On
 
-# API requests are handled by legal_document/.htaccess (proxy to uvicorn) - don't touch them
-RewriteCond %{REQUEST_URI} !^/legal_document/
+# API: proxy /legal_document/* to the standalone uvicorn process (strips the prefix)
+RewriteRule ^legal_document/(.*)$ http://127.0.0.1:30001/$1 [P,L]
 
-# serve real files/dirs directly
+# SPA: everything that isn't a real file/dir falls back to index.html
 RewriteCond %{REQUEST_FILENAME} !-f
 RewriteCond %{REQUEST_FILENAME} !-d
-
-# everything else -> index.html (client-side routing)
-RewriteRule ^ /index.html [L]
+RewriteRule ^ index.html [L]
