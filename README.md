@@ -25,11 +25,12 @@ at rest for stored documents/results is explicitly deferred, tracked as a
 separate future decision.
 
 **Multi-tenancy**: the app supports public self-registration into isolated
-organizations (Phase 1 of a 3-phase plan — see "Authentication / RBAC /
-Organizations" below), and real Stripe subscription billing (Phase 2 — see
-"Billing (Stripe)" below). Every registrant lands on a permanent free plan
-until an attorney upgrades it. A platform-admin panel for managing every
-organization's subscription across the whole app (Phase 3) isn't built yet.
+organizations (Phase 1 — see "Authentication / RBAC / Organizations"
+below), real Stripe subscription billing (Phase 2 — see "Billing (Stripe)"
+below), and a platform-admin panel (Phase 3 — see "Platform admin" below)
+for Ranksol's own staff to see and manually manage every organization's
+plan/status. Every registrant lands on a permanent free plan until an
+attorney upgrades it.
 
 **Caveat:** the classifier's "Other" class is a placeholder proxy (trained on
 generic news-article text), not a validated eDiscovery document-type
@@ -299,6 +300,32 @@ localhost:8000/billing/webhook`, which also prints a `whsec_...` value for
 
 Every other event type Stripe sends is accepted (200) and ignored — this
 app only acts on the four above.
+
+## Platform admin
+
+Separate from any customer organization's own `/admin` page (which only
+manages that org's users): a **platform-admin** account belongs to no
+organization at all and can see/manage every organization on the platform —
+for Ranksol's own staff, not customers.
+
+Bootstrap one (no public sign-up for this, same as the very first attorney
+account):
+
+```
+python -m scripts.create_platform_admin --email you@ranksol.example --name "Your Name"
+```
+
+Log in via **`/admin-login`** (a separate page from the regular `/login` —
+there's a "Login as admin" link at the bottom of the regular login form).
+This lands you on `/platform-admin`: every organization, its plan/
+subscription status, user count, and an expandable list of its users, plus
+an inline override to manually change any organization's plan/status
+(comping an account, fixing a stuck Stripe sync, etc.) — logged to
+`org_plan_overridden` in **that organization's own** audit log too, not
+just a platform-side record. A platform-admin account gets `403` on every
+tenant-scoped route (`/matters`, `/documents/*`, `/dockets/*`, `/billing/*`,
+`/search`) — it can see organizations exist and adjust their plan, but
+never their actual matters/documents/dockets.
 
 ## Run the API
 

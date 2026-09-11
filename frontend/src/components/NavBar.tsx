@@ -15,47 +15,57 @@ export function NavBar() {
     if (trimmed) navigate(`/search?q=${encodeURIComponent(trimmed)}`);
   }
 
+  const homePath = user ? (user.is_platform_admin ? "/platform-admin" : "/dashboard") : "/";
+
   return (
     <nav className={styles.nav}>
-      <Link to={user ? "/dashboard" : "/"} className={styles.brand}>
+      <Link to={homePath} className={styles.brand}>
         <span className={styles.monogram} aria-hidden="true">
           LI
         </span>
         <span className={styles.brandText}>Legal Document Intelligence</span>
       </Link>
       <div className={styles.links}>
-        {user && (
-          <>
+        {user &&
+          (user.is_platform_admin ? (
             <NavLink
-              to="/dashboard"
+              to="/platform-admin"
               className={({ isActive }) => `${styles.link} ${isActive ? styles.linkActive : ""}`}
             >
-              Matters
+              Platform Admin
             </NavLink>
-            <NavLink
-              to="/quick-analyze"
-              className={({ isActive }) => `${styles.link} ${isActive ? styles.linkActive : ""}`}
-            >
-              Quick Analyze (not saved)
-            </NavLink>
-            <NavLink
-              to="/billing"
-              className={({ isActive }) => `${styles.link} ${isActive ? styles.linkActive : ""}`}
-            >
-              Billing
-            </NavLink>
-            {user.role === "attorney" && (
+          ) : (
+            <>
               <NavLink
-                to="/admin"
+                to="/dashboard"
                 className={({ isActive }) => `${styles.link} ${isActive ? styles.linkActive : ""}`}
               >
-                Admin
+                Matters
               </NavLink>
-            )}
-          </>
-        )}
+              <NavLink
+                to="/quick-analyze"
+                className={({ isActive }) => `${styles.link} ${isActive ? styles.linkActive : ""}`}
+              >
+                Quick Analyze (not saved)
+              </NavLink>
+              <NavLink
+                to="/billing"
+                className={({ isActive }) => `${styles.link} ${isActive ? styles.linkActive : ""}`}
+              >
+                Billing
+              </NavLink>
+              {user.role === "attorney" && (
+                <NavLink
+                  to="/admin"
+                  className={({ isActive }) => `${styles.link} ${isActive ? styles.linkActive : ""}`}
+                >
+                  Admin
+                </NavLink>
+              )}
+            </>
+          ))}
       </div>
-      {user && (
+      {user && !user.is_platform_admin && (
         <form className={styles.searchForm} onSubmit={handleSearchSubmit}>
           <input
             type="search"
@@ -68,7 +78,7 @@ export function NavBar() {
       {user && (
         <div className={styles.userArea}>
           <span className={styles.userInfo}>
-            {user.name} <span className={styles.role}>({user.role})</span>
+            {user.name} <span className={styles.role}>({user.is_platform_admin ? "platform admin" : user.role})</span>
           </span>
           <button type="button" className={styles.logoutButton} onClick={() => logout()}>
             Log out

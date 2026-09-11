@@ -94,6 +94,15 @@ def list_users(db_path: str) -> list[UserRecord]:
     return [_row_to_user_record(row) for row in rows]
 
 
+def list_users_for_organization(db_path: str, organization_id: int) -> list[UserRecord]:
+    """Platform-admin org-detail view (app/api/routes/platform_admin.py)."""
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM users WHERE organization_id = ? ORDER BY id", (organization_id,)
+        ).fetchall()
+    return [_row_to_user_record(row) for row in rows]
+
+
 def _row_to_audit_log_entry(row: sqlite3.Row) -> AuditLogEntry:
     return AuditLogEntry(
         id=row["id"],

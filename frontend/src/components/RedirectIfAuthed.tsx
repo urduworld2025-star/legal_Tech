@@ -8,6 +8,6 @@ import { useAuth } from "../auth/AuthContext";
 // resolves, rather than blocking first paint on it.
 export function RedirectIfAuthed({ children }: { children: ReactNode }) {
   const { user } = useAuth();
-  if (user) return <Navigate to="/dashboard" replace />;
+  if (user) return <Navigate to={user.is_platform_admin ? "/platform-admin" : "/dashboard"} replace />;
   return <>{children}</>;
 }

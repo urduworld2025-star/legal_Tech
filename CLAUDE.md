@@ -89,9 +89,15 @@ Start with these 4 before expanding to all 41 CUAD categories:
   `app/api/routes/billing.py`) — every org starts on a permanent free plan;
   an attorney can upgrade via Stripe Checkout from `/billing`, and a webhook
   is the source of truth for plan/subscription state, not client-side
-  confirmation. A platform-admin panel (for viewing/managing every org's
-  subscription across the whole app, not just your own) is deliberately not
-  built yet — see plan history for that phase.
+  confirmation. A platform-admin panel exists too, separate from any
+  customer org's own `/admin` — a platform-admin account belongs to no
+  organization (`is_platform_admin=1`, `organization_id=NULL`, bootstrapped
+  via `scripts/create_platform_admin.py`), logs in at a distinct `/admin-login`
+  page, and can view every organization + manually override its plan/status
+  from `/platform-admin` — but gets 403 on every tenant-scoped route (never
+  sees a customer's actual matters/documents/dockets). See
+  `app/api/routes/platform_admin.py` and `app/core/security.py`'s
+  `require_platform_admin` below.
 
 ## Non-goals for now
 - Do not attempt full 41-category CUAD coverage until the 4-category
@@ -250,11 +256,16 @@ importable core library the API calls into. `pyproject.toml` puts both
   authorized for any tenant's resources). `require_role(*roles)` now depends
   on `get_current_org_user` rather than `get_current_user` directly, so a
   platform-admin account's placeholder `role` (see `organizations/` below)
-  can never pass a role check on a tenant-scoped route. Status mapping:
-  no/bad/expired token or a deactivated user → 401 (never distinguish which,
-  same principle as login); missing `JWT_SECRET_KEY` (server misconfig) →
-  503; authenticated but wrong role, or a platform-admin hitting a
-  tenant-scoped route → 403.
+  can never pass a role check on a tenant-scoped route. `require_platform_admin`
+  is the mirror image — depends on bare `get_current_user` (not
+  `get_current_org_user`, since a platform admin has `organization_id = None`
+  by definition) and 403s anyone whose `is_platform_admin` isn't set;
+  `app/api/routes/platform_admin.py` is the only router that uses it. Status
+  mapping: no/bad/expired token or a deactivated user → 401 (never
+  distinguish which, same principle as login); missing `JWT_SECRET_KEY`
+  (server misconfig) → 503; authenticated but wrong role, a platform-admin
+  hitting a tenant-scoped route, or a regular user hitting a platform-admin
+  route → 403.
 - `app/core/rate_limit.py` — `enforce_registration_rate_limit` (a FastAPI
   dependency), a tiny in-process sliding-window limiter (5/hour/IP) guarding
   `POST /auth/register`. In-process, module-level state is deliberate and
@@ -269,18 +280,38 @@ importable core library the API calls into. `pyproject.toml` puts both
   `organizations` then `users` in a single `connect()` block so a crash
   mid-way never leaves an org with no owner; used by `/auth/register` and by
   `scripts/create_admin.py`), `create_organization` (standalone, no owner —
-  used by tests and future platform-admin tooling), `get_organization`,
+  used by tests and by `list_organizations_with_user_counts`' LEFT JOIN
+  needing to handle a hypothetical zero-user org), `get_organization`,
+  `list_organizations`/`list_organizations_with_user_counts` (the latter's
+  `OrganizationSummary` return type is `Organization` plus a `user_count`
+  from a `LEFT JOIN users` grouped by org — platform-admin listing only),
   `get_organization_by_stripe_customer_id`/`_by_stripe_subscription_id`
   (used by the webhook handlers below to map a Stripe event back to an org),
   and `update_organization(db_path, organization_id, **fields)` (allow-lists
   `{"plan", "subscription_status", "stripe_customer_id",
   "stripe_subscription_id"}`, raises `ValueError` on anything else — not a
-  general-purpose setter, only ever called by
-  `legalintel.billing.webhook_handlers`). `src/legalintel/models/organization.py`
-  holds the `Organization` pydantic model. Platform-admin accounts
-  (`is_platform_admin=1`, `organization_id=NULL`) are a separate, not-yet-built
-  concept — see `get_current_org_user` above for how they're already fenced
-  off from tenant routes even before that admin surface exists.
+  general-purpose setter, called by both `legalintel.billing.webhook_handlers`
+  and `app/api/routes/platform_admin.py`'s manual override). `auth/db.py`'s
+  `list_users_for_organization` is platform-admin-only, used by the org
+  detail route below. `src/legalintel/models/organization.py` holds
+  `Organization`, `OrganizationSummary`, `OrganizationDetail` (`{organization,
+  users}` — imports `User` from `models/user.py`, no circular import since
+  `user.py` doesn't import back), and `OrganizationPlanOverride` (the
+  `PATCH .../plan` request body). Platform-admin accounts
+  (`is_platform_admin=1`, `organization_id=NULL`, `role='attorney'` as an
+  unused placeholder since SQLite can't cheaply make `role` nullable
+  without a full table rebuild) are bootstrapped via
+  `scripts/create_platform_admin.py` (same getpass-confirm shape as
+  `create_admin.py`, no org created).
+- `app/api/routes/platform_admin.py` — router-level
+  `dependencies=[Depends(require_platform_admin)]` on all three routes:
+  `GET /platform-admin/organizations` (`list[OrganizationSummary]`), `GET
+  /platform-admin/organizations/{id}` (`OrganizationDetail`, 404 if the org
+  doesn't exist), `PATCH /platform-admin/organizations/{id}/plan` (manual
+  override, 404 if the org doesn't exist, logs `"org_plan_overridden"` via
+  `auth_db.log_action(organization_id=id)` against the **target org's** id —
+  so the override shows up in that org's own `/admin` audit log too, not
+  just a platform-side record).
 - `src/legalintel/billing/` — `stripe_client.py` is a thin wrapper around the
   `stripe` SDK (`create_checkout_session`, `create_portal_session`,
   `construct_webhook_event`), passing `api_key=` as a per-call kwarg rather
@@ -550,13 +581,18 @@ importable core library the API calls into. `pyproject.toml` puts both
   (`frontend/src/types/api.ts`/`docket.ts`/`matter.ts`/`user.ts`/`search.ts`
   mirror the backend pydantic models). Routes: `/` (`LandingPage`, public
   marketing page — U.S. legal-audience copy, no fabricated stats), `/login`
-  (`LoginPage`), and `/register` (`RegisterPage` — organization name, name,
-  email, password/confirm; calls `AuthContext`'s `register`, which
-  auto-logs-in on success just like `login` does; reuses
-  `LoginPage.module.css` directly rather than a near-duplicate stylesheet)
-  all wrapped in `<RedirectIfAuthed>` (bounces an
-  already-signed-in visitor to `/dashboard` without blocking first paint for
-  anonymous ones — see `RedirectIfAuthed.tsx`); everything else is wrapped
+  (`LoginPage` — has a "Login as admin" link to `/admin-login` below the
+  Sign In button, in addition to the "Create an account" link), `/register`
+  (`RegisterPage` — organization name, name, email, password/confirm; calls
+  `AuthContext`'s `register`, which auto-logs-in on success just like
+  `login` does), and `/admin-login` (`AdminLoginPage` — same form shape,
+  calls `loginAsPlatformAdmin` instead; a regular account gets rejected
+  client-side, without a session ever being set, if `is_platform_admin` is
+  false) all reuse `LoginPage.module.css` directly rather than near-duplicate
+  stylesheets, and are all wrapped in `<RedirectIfAuthed>` (bounces an
+  already-signed-in visitor to `/dashboard` or `/platform-admin` — whichever
+  fits `user.is_platform_admin` — without blocking first paint for anonymous
+  visitors — see `RedirectIfAuthed.tsx`); everything else is wrapped
   in `<RequireAuth>` (redirects to `/login` if no session) — `/dashboard`
   (`MattersListPage` — create/list, create-form hidden for support staff),
   `/matters/:matterId` (`MatterDetailPage` — the review interface: upload
@@ -572,16 +608,30 @@ importable core library the API calls into. `pyproject.toml` puts both
   org's plan even though only `role === "attorney"` sees the actual
   Upgrade/Manage-billing buttons; both buttons are a one-line
   `window.location.href = checkout_url`/`portal_url` redirect to
-  Stripe-hosted pages, no custom payment UI), `/search`
-  (`SearchResultsPage` — reads `?q=` from the URL rather than
-  component state, so the URL itself is shareable/bookmarkable; results
-  grouped into Matters/Documents/Dockets sections, each linking to the
-  owning matter). The search box lives in `NavBar.tsx` itself (visible on
-  every authenticated page, not just a dedicated search page) and navigates
-  to `/search?q=...` on submit.
-  `auth/AuthContext.tsx` holds `{user, loading, login, register, logout}`
-  (backed by `auth/tokenStore.ts`'s plain `localStorage` get/set/clear, not
-  React state, so `api/client.ts` can read the token without importing React);
+  Stripe-hosted pages, no custom payment UI), `/platform-admin`
+  (`PlatformAdminPage` — platform-admin-only, a table of every organization
+  with plan/status/user-count, click-to-expand per-row user list via
+  `getOrganizationDetail`, and an inline plan/status override via
+  `updateOrganizationPlan` — `api/client.ts`'s `requestJson` method union
+  gained `"PATCH"` for this), and `/search` (`SearchResultsPage` — reads
+  `?q=` from the URL rather than component state, so the URL itself is
+  shareable/bookmarkable; results grouped into Matters/Documents/Dockets
+  sections, each linking to the owning matter). The search box lives in
+  `NavBar.tsx` itself (visible on every authenticated page except for a
+  platform-admin account, which sees only a "Platform Admin" nav link —
+  none of the org-scoped nav items resolve for an account with no
+  organization) and navigates to `/search?q=...` on submit.
+  `auth/AuthContext.tsx` holds `{user, loading, login, loginAsPlatformAdmin,
+  register, logout}` — `login` returns the just-logged-in `User` (not just
+  `void`) specifically so `LoginPage` can redirect a platform-admin account
+  straight to `/platform-admin` even if they used the *regular* login form
+  by mistake, without waiting on a context re-render to see the new
+  `is_platform_admin` value; `loginAsPlatformAdmin` is a separate method
+  (not a param on `login`) that additionally 403s - without setting the
+  token/session at all - if the account isn't actually a platform admin.
+  `AuthContext` is backed by `auth/tokenStore.ts`'s plain `localStorage`
+  get/set/clear, not React state, so `api/client.ts` can read the token
+  without importing React;
   `api/client.ts` attaches `Authorization: Bearer <token>` to every request
   and exposes a tiny `onUnauthorized` pub-sub so a 401 from *any* call
   clears the session immediately, not just the one currently in flight.
