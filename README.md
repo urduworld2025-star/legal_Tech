@@ -24,6 +24,12 @@ analysis, docket checks, and report downloads are not logged). Encryption
 at rest for stored documents/results is explicitly deferred, tracked as a
 separate future decision.
 
+**Multi-tenancy**: the app now supports public self-registration into
+isolated organizations (Phase 1 of a 3-phase plan — see "Authentication /
+RBAC / Organizations" below). Every registrant lands on a permanent free
+plan; Stripe billing (Phase 2) and a platform-admin panel for managing every
+organization's subscription (Phase 3) aren't built yet.
+
 **Caveat:** the classifier's "Other" class is a placeholder proxy (trained on
 generic news-article text), not a validated eDiscovery document-type
 category — see "Document classification model" below.
@@ -185,7 +191,7 @@ before this feature**: delete it. The database was renamed to `legalintel.db`
 and `tracked_dockets.matter_id` changed from free text to a real reference —
 it's gitignored, disposable local cache, not real data.
 
-## Authentication / RBAC
+## Authentication / RBAC / Organizations
 
 Every route except `GET /health` requires a bearer token. Set a signing
 secret in `.env` (generate one, don't hand-pick it):
@@ -195,22 +201,27 @@ JWT_SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))")
 ```
 
 **One-time step if you have an existing local `legalintel.db` from before
-this feature**: delete it. RBAC added new tables (`users`, `audit_log`,
-`clause_reviews`) and a `matters.created_by` column with no migration
-framework in place yet — it's gitignored, disposable local cache, not real
-data.
+this feature**: delete it. There's still no migration framework in place —
+schema changes (including this one, which added an `organizations` table
+and `organization_id` columns) run as idempotent `CREATE TABLE IF NOT
+EXISTS`/`ALTER TABLE ... ADD COLUMN` statements on every connect, which is
+fine for real data too (see "Multi-tenancy" below), but a stale local dev
+`.db` is gitignored, disposable cache — just delete it rather than debug it.
 
-There's no public registration endpoint by design — bootstrap the first
-account (an attorney, since only attorneys can create other users) with the
-CLI script:
+**The app is multi-tenant**: every registrant gets their own isolated
+organization (matters/documents/dockets/users are all scoped to it — one
+org can never see another's data). Two ways to create an account:
 
-```
-python -m scripts.create_admin --email you@firm.com --name "Jane Attorney"
-```
+- **Public self-registration** — `POST /auth/register` (or the frontend's
+  `/register` page) creates a brand-new organization plus its first user
+  (always an attorney) in one step. Rate-limited (5/hour/IP) since it's the
+  app's only public write endpoint. No email verification exists yet.
+- **CLI bootstrap** — `python -m scripts.create_admin --org "Acme Legal"
+  --email you@firm.com --name "Jane Attorney"` does the same thing outside
+  the API/rate limit, for local dev or ops use. Prompts for a password (min.
+  8 characters) and writes directly to `legalintel.db`.
 
-It prompts for a password (min. 8 characters) and writes directly to
-`legalintel.db`, bypassing the API. Log in via the frontend's `/login` page,
-or directly:
+Log in via the frontend's `/login` page, or directly:
 
 ```
 curl -X POST http://127.0.0.1:8000/auth/login \
@@ -220,21 +231,28 @@ curl -X POST http://127.0.0.1:8000/auth/login \
 
 Send the returned `access_token` as `Authorization: Bearer <token>` on
 subsequent requests (8-hour expiry, no refresh token). Once logged in as an
-attorney, create paralegal/support-staff accounts via `POST /auth/users` or
-the frontend's `/admin` page.
+attorney, create paralegal/support-staff accounts **in your own
+organization** via `POST /auth/users` or the frontend's `/admin` page.
 
-**Permission matrix:**
+**Permission matrix** (all within one organization — an org's members never
+see another org's data, regardless of role):
 
 | Action | Attorney | Paralegal | Support staff |
 |---|---|---|---|
-| View matters, dockets, documents, audit log entries you're allowed to see | ✅ | ✅ | ✅ (read-only) |
+| View matters, dockets, documents, audit log entries in your org | ✅ | ✅ | ✅ (read-only) |
 | Create matters; upload/analyze documents; track dockets; mark clauses reviewed | ✅ | ✅ | ❌ |
 | Delete a matter | ✅ | ❌ | ❌ |
 | Create users; view the audit log | ✅ | ❌ | ❌ |
 
-`get_current_user` re-checks `is_active` against the database on every
-request rather than trusting a role baked into the token, so deactivating a
-user takes effect immediately without a token blacklist.
+`get_current_user` re-checks `is_active` (and `organization_id`) against the
+database on every request rather than trusting a role/org baked into the
+token, so deactivating a user (or changing their org) takes effect
+immediately without a token blacklist.
+
+**Not built yet**: Stripe billing (every organization is on a permanent free
+plan today — the schema has unused `plan`/`subscription_status`/`stripe_*`
+columns ready for it) and a platform-admin panel for viewing/managing every
+organization's subscription across the whole app.
 
 ## Run the API
 
