@@ -24,6 +24,12 @@ analysis, docket checks, and report downloads are not logged). Encryption
 at rest for stored documents/results is explicitly deferred, tracked as a
 separate future decision.
 
+**Multi-tenancy**: the app now supports public self-registration into
+isolated organizations (Phase 1 of a 3-phase plan — see "Authentication /
+RBAC / Organizations" below). Every registrant lands on a permanent free
+plan; Stripe billing (Phase 2) and a platform-admin panel for managing every
+organization's subscription (Phase 3) aren't built yet.
+
 **Caveat:** the classifier's "Other" class is a placeholder proxy (trained on
 generic news-article text), not a validated eDiscovery document-type
 category — see "Document classification model" below.
@@ -185,7 +191,7 @@ before this feature**: delete it. The database was renamed to `legalintel.db`
 and `tracked_dockets.matter_id` changed from free text to a real reference —
 it's gitignored, disposable local cache, not real data.
 
-## Authentication / RBAC
+## Authentication / RBAC / Organizations
 
 Every route except `GET /health` requires a bearer token. Set a signing
 secret in `.env` (generate one, don't hand-pick it):
@@ -195,22 +201,27 @@ JWT_SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))")
 ```
 
 **One-time step if you have an existing local `legalintel.db` from before
-this feature**: delete it. RBAC added new tables (`users`, `audit_log`,
-`clause_reviews`) and a `matters.created_by` column with no migration
-framework in place yet — it's gitignored, disposable local cache, not real
-data.
+this feature**: delete it. There's still no migration framework in place —
+schema changes (including this one, which added an `organizations` table
+and `organization_id` columns) run as idempotent `CREATE TABLE IF NOT
+EXISTS`/`ALTER TABLE ... ADD COLUMN` statements on every connect, which is
+fine for real data too (see "Multi-tenancy" below), but a stale local dev
+`.db` is gitignored, disposable cache — just delete it rather than debug it.
 
-There's no public registration endpoint by design — bootstrap the first
-account (an attorney, since only attorneys can create other users) with the
-CLI script:
+**The app is multi-tenant**: every registrant gets their own isolated
+organization (matters/documents/dockets/users are all scoped to it — one
+org can never see another's data). Two ways to create an account:
 
-```
-python -m scripts.create_admin --email you@firm.com --name "Jane Attorney"
-```
+- **Public self-registration** — `POST /auth/register` (or the frontend's
+  `/register` page) creates a brand-new organization plus its first user
+  (always an attorney) in one step. Rate-limited (5/hour/IP) since it's the
+  app's only public write endpoint. No email verification exists yet.
+- **CLI bootstrap** — `python -m scripts.create_admin --org "Acme Legal"
+  --email you@firm.com --name "Jane Attorney"` does the same thing outside
+  the API/rate limit, for local dev or ops use. Prompts for a password (min.
+  8 characters) and writes directly to `legalintel.db`.
 
-It prompts for a password (min. 8 characters) and writes directly to
-`legalintel.db`, bypassing the API. Log in via the frontend's `/login` page,
-or directly:
+Log in via the frontend's `/login` page, or directly:
 
 ```
 curl -X POST http://127.0.0.1:8000/auth/login \
@@ -220,21 +231,28 @@ curl -X POST http://127.0.0.1:8000/auth/login \
 
 Send the returned `access_token` as `Authorization: Bearer <token>` on
 subsequent requests (8-hour expiry, no refresh token). Once logged in as an
-attorney, create paralegal/support-staff accounts via `POST /auth/users` or
-the frontend's `/admin` page.
+attorney, create paralegal/support-staff accounts **in your own
+organization** via `POST /auth/users` or the frontend's `/admin` page.
 
-**Permission matrix:**
+**Permission matrix** (all within one organization — an org's members never
+see another org's data, regardless of role):
 
 | Action | Attorney | Paralegal | Support staff |
 |---|---|---|---|
-| View matters, dockets, documents, audit log entries you're allowed to see | ✅ | ✅ | ✅ (read-only) |
+| View matters, dockets, documents, audit log entries in your org | ✅ | ✅ | ✅ (read-only) |
 | Create matters; upload/analyze documents; track dockets; mark clauses reviewed | ✅ | ✅ | ❌ |
 | Delete a matter | ✅ | ❌ | ❌ |
 | Create users; view the audit log | ✅ | ❌ | ❌ |
 
-`get_current_user` re-checks `is_active` against the database on every
-request rather than trusting a role baked into the token, so deactivating a
-user takes effect immediately without a token blacklist.
+`get_current_user` re-checks `is_active` (and `organization_id`) against the
+database on every request rather than trusting a role/org baked into the
+token, so deactivating a user (or changing their org) takes effect
+immediately without a token blacklist.
+
+**Not built yet**: Stripe billing (every organization is on a permanent free
+plan today — the schema has unused `plan`/`subscription_status`/`stripe_*`
+columns ready for it) and a platform-admin panel for viewing/managing every
+organization's subscription across the whole app.
 
 ## Run the API
 
@@ -338,6 +356,55 @@ See that same PDF for the recommended architecture and a cost estimate
 treat the Render/PaaS cost as directionally similar rather than identical,
 since the RAM this app needs (for two loaded transformer models) is the
 main cost driver either way, not the platform choice.
+
+### Alternative: shared cPanel / LiteSpeed hosting
+
+The live client deployment runs on shared cPanel hosting (CloudLinux +
+LiteSpeed), not Render. This path is fiddlier but needs no card and no VPS.
+Key facts learned doing it, so the next deploy is faster:
+
+- **cPanel's "Setup Python App" (Phusion Passenger) cannot run this app.**
+  Passenger is WSGI-only; FastAPI is ASGI, and the `a2wsgi` bridge
+  (`passenger_wsgi.py`) silently hangs inside LiteSpeed's LSAPI worker.
+  Instead, run real uvicorn as a standalone background process and reverse-proxy
+  to it from `.htaccess`:
+  - `~/legalintel/` — the repo (via cPanel Git Version Control). `chmod 755
+    ~/legalintel` (cPanel creates it `700`; the web server can't traverse it).
+  - Virtualenv (Python 3.12): `pip install --only-binary=:all: -r
+    requirements.txt` then `pip install -e .` — `/tmp` is mounted `noexec` so
+    any source build fails; `--only-binary` forces wheels.
+  - `~/legalintel/.env` holds all config (uvicorn started via `nohup` does
+    **not** inherit cPanel's Python-App env vars): `JWT_SECRET_KEY`,
+    `COURTLISTENER_API_TOKEN`, `CLAUSE_MODEL_DIR`,
+    `DOCUMENT_CLASSIFICATION_MODEL_DIR`, `HF_TOKEN`, `DB_PATH`, and the four
+    `*_NUM_THREADS=1` vars (OpenBLAS otherwise spawns a thread per host core
+    and segfaults under the account's process limit).
+  - `~/legalintel/keepalive.sh` — `curl -sf http://127.0.0.1:30001/health ||
+    nohup .../bin/uvicorn app.main:app --host 127.0.0.1 --port 30001
+    --workers 1 >> uvicorn.log 2>&1 &`. Cron: `*/3 * * * *
+    /home/<acct>/legalintel/keepalive.sh` (shared hosting has no systemd).
+  - `~/public_html/<app-path>/.htaccess` — the API proxy, replacing the
+    CloudLinux-generated Passenger block (keep a `.htaccess.passenger` backup):
+    ```
+    RewriteEngine On
+    RewriteRule ^(.*)$ http://127.0.0.1:30001/$1 [P,L]
+    ```
+- **Frontend** builds locally (server has no Node): `VITE_API_BASE_URL=<public
+  API URL>` then `npm run build`. Transfer `frontend/dist/` to the server via
+  a throwaway git branch (`git add -f frontend/dist` past `.gitignore`, push,
+  then `git archive <branch> frontend/dist | tar -x` on the server) and copy
+  its contents into `~/public_html/`. Its `.htaccess` there does SPA fallback
+  to `index.html` and **must** exclude the API path so the proxy still wins:
+  ```
+  RewriteEngine On
+  RewriteCond %{REQUEST_URI} !^/<app-path>/
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+  RewriteRule ^ /index.html [L]
+  ```
+- **numpy is pinned to `1.26.4`** in `requirements.txt` — numpy 2.x's SIMD
+  dispatcher crashes on CloudLinux/CageFS. Deployment target must be Python
+  3.10–3.12 (1.26.4 has no 3.13 wheel).
 
 ## Notes
 

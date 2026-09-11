@@ -1,5 +1,5 @@
 import { FormEvent, useState } from "react";
-import { Location, useLocation, useNavigate } from "react-router-dom";
+import { Link, Location, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { ApiError } from "../api/client";
 import { formatApiError } from "../utils/formatApiError";
@@ -60,6 +60,9 @@ export function LoginPage() {
         <button type="submit" disabled={submitting || !email.trim() || !password}>
           {submitting ? "Signing in…" : "Sign in"}
         </button>
+        <p className={styles.altAction}>
+          New here? <Link to="/register">Create an account</Link>
+        </p>
       </form>
     </div>
   );

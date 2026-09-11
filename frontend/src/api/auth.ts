@@ -1,6 +1,18 @@
 import { requestJson } from "./client";
 import type { AuditLogEntry, Role, TokenResponse, User } from "../types/user";
 
+export function register(
+  organizationName: string,
+  name: string,
+  email: string,
+  password: string
+): Promise<TokenResponse> {
+  return requestJson<TokenResponse>("/auth/register", {
+    method: "POST",
+    body: { organization_name: organizationName, name, email, password },
+  });
+}
+
 export function login(email: string, password: string): Promise<TokenResponse> {
   return requestJson<TokenResponse>("/auth/login", { method: "POST", body: { email, password } });
 }

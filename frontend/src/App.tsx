@@ -4,6 +4,7 @@ import { RequireAuth } from "./components/RequireAuth";
 import { RedirectIfAuthed } from "./components/RedirectIfAuthed";
 import { LandingPage } from "./pages/LandingPage";
 import { LoginPage } from "./pages/LoginPage";
+import { RegisterPage } from "./pages/RegisterPage";
 import { MattersListPage } from "./pages/MattersListPage";
 import { MatterDetailPage } from "./pages/MatterDetailPage";
 import { QuickAnalyzePage } from "./pages/QuickAnalyzePage";
@@ -32,6 +33,14 @@ export default function App() {
           element={
             <RedirectIfAuthed>
               <LoginPage />
+            </RedirectIfAuthed>
+          }
+        />
+        <Route
+          path="/register"
+          element={
+            <RedirectIfAuthed>
+              <RegisterPage />
             </RedirectIfAuthed>
           }
         />

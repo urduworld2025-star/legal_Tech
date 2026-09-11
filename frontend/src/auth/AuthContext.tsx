@@ -1,5 +1,5 @@
 import { createContext, ReactNode, useCallback, useContext, useEffect, useState } from "react";
-import { getMe, login as apiLogin, logout as apiLogout } from "../api/auth";
+import { getMe, login as apiLogin, logout as apiLogout, register as apiRegister } from "../api/auth";
 import { onUnauthorized } from "../api/client";
 import { clearToken, getToken, setToken } from "./tokenStore";
 import type { User } from "../types/user";
@@ -8,6 +8,7 @@ interface AuthContextValue {
   user: User | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
+  register: (organizationName: string, name: string, email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -36,6 +37,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(response.user);
   }, []);
 
+  const register = useCallback(
+    async (organizationName: string, name: string, email: string, password: string) => {
+      // Auto-login on success, same shape as login() - registration returns a token
+      // just like /auth/login does.
+      const response = await apiRegister(organizationName, name, email, password);
+      setToken(response.access_token);
+      setUser(response.user);
+    },
+    []
+  );
+
   const logout = useCallback(async () => {
     try {
       await apiLogout();
@@ -45,7 +57,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  return <AuthContext.Provider value={{ user, loading, login, logout }}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={{ user, loading, login, register, logout }}>{children}</AuthContext.Provider>
+  );
 }
 
 export function useAuth(): AuthContextValue {

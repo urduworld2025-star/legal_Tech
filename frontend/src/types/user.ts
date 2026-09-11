@@ -8,6 +8,10 @@ export interface User {
   name: string;
   role: Role;
   is_active: boolean;
+  // organization_id is null only for platform-admin accounts (Ranksol's own staff,
+  // not a customer org) - every org member has one.
+  organization_id: number | null;
+  is_platform_admin: boolean;
   created_at: string;
 }
 

@@ -42,6 +42,12 @@
   letter-spacing: -0.01em;
 }
 
+.topBarActions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
 .topBarSignIn {
   padding: 0.5rem 1.1rem;
   border-radius: var(--radius-sm);
@@ -56,6 +62,23 @@
 .topBarSignIn:hover {
   border-color: var(--accent);
   background: var(--accent-bg);
+}
+
+.topBarSignUp {
+  padding: 0.5rem 1.1rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  text-decoration: none;
+  font-size: 0.88rem;
+  font-weight: 600;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.topBarSignUp:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 /* ---------- Hero ---------- */

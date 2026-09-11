@@ -38,28 +38,41 @@ def add_tracked_docket(
     docket_number: str | None,
     case_name: str | None,
     matter_id: int | None,
+    organization_id: int,
 ) -> TrackedDocket:
     created_at = datetime.now().astimezone().isoformat()
     with _connect(db_path) as conn:
         cursor = conn.execute(
             """
             INSERT INTO tracked_dockets
-                (courtlistener_docket_id, court, docket_number, case_name, matter_id, created_at, last_checked_at)
-            VALUES (?, ?, ?, ?, ?, ?, NULL)
+                (courtlistener_docket_id, court, docket_number, case_name, matter_id, organization_id,
+                 created_at, last_checked_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
             """,
-            (courtlistener_docket_id, court, docket_number, case_name, matter_id, created_at),
+            (courtlistener_docket_id, court, docket_number, case_name, matter_id, organization_id, created_at),
         )
         row = conn.execute("SELECT * FROM tracked_dockets WHERE id = ?", (cursor.lastrowid,)).fetchone()
     return _row_to_tracked_docket(row)
 
 
-def get_tracked_docket(db_path: str, tracked_docket_id: int) -> TrackedDocket | None:
+def get_tracked_docket(db_path: str, tracked_docket_id: int, *, organization_id: int) -> TrackedDocket | None:
     with _connect(db_path) as conn:
-        row = conn.execute("SELECT * FROM tracked_dockets WHERE id = ?", (tracked_docket_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM tracked_dockets WHERE id = ? AND organization_id = ?",
+            (tracked_docket_id, organization_id),
+        ).fetchone()
     return _row_to_tracked_docket(row) if row is not None else None
 
 
 def get_tracked_docket_by_courtlistener_id(db_path: str, courtlistener_docket_id: int) -> TrackedDocket | None:
+    """Deliberately NOT organization-scoped, unlike every other lookup in this
+    module. `courtlistener_docket_id` carries a table-wide UNIQUE constraint (see
+    storage.py) - a real-world docket can currently only be tracked by one
+    organization platform-wide. Making this per-org would need a composite unique
+    constraint, which SQLite can't add without a full table rebuild (this repo's
+    stated policy is not to introduce that migration machinery). Accepted as a known
+    Phase 1 limitation rather than silently producing a 500 (IntegrityError) if this
+    were scoped and a second org tried to track an already-tracked docket."""
     with _connect(db_path) as conn:
         row = conn.execute(
             "SELECT * FROM tracked_dockets WHERE courtlistener_docket_id = ?", (courtlistener_docket_id,)
@@ -67,16 +80,19 @@ def get_tracked_docket_by_courtlistener_id(db_path: str, courtlistener_docket_id
     return _row_to_tracked_docket(row) if row is not None else None
 
 
-def list_tracked_dockets(db_path: str) -> list[TrackedDocket]:
+def list_tracked_dockets(db_path: str, *, organization_id: int) -> list[TrackedDocket]:
     with _connect(db_path) as conn:
-        rows = conn.execute("SELECT * FROM tracked_dockets ORDER BY id").fetchall()
+        rows = conn.execute(
+            "SELECT * FROM tracked_dockets WHERE organization_id = ? ORDER BY id", (organization_id,)
+        ).fetchall()
     return [_row_to_tracked_docket(row) for row in rows]
 
 
-def list_tracked_dockets_for_matter(db_path: str, matter_id: int) -> list[TrackedDocket]:
+def list_tracked_dockets_for_matter(db_path: str, matter_id: int, *, organization_id: int) -> list[TrackedDocket]:
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT * FROM tracked_dockets WHERE matter_id = ? ORDER BY id", (matter_id,)
+            "SELECT * FROM tracked_dockets WHERE matter_id = ? AND organization_id = ? ORDER BY id",
+            (matter_id, organization_id),
         ).fetchall()
     return [_row_to_tracked_docket(row) for row in rows]
 

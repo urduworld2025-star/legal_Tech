@@ -30,11 +30,25 @@ def test_search_requires_authentication(client: TestClient) -> None:
     assert response.status_code == 401
 
 
-def test_search_visible_to_support_staff(client: TestClient, auth_headers) -> None:
-    attorney_headers = auth_headers("attorney")
+def test_search_visible_to_support_staff(client: TestClient, auth_headers, make_org) -> None:
+    org = make_org()
+    attorney_headers = auth_headers("attorney", organization_id=org.id)
     client.post("/matters", json={"name": "Readable Matter"}, headers=attorney_headers)
 
-    response = client.get("/search", params={"q": "Readable"}, headers=auth_headers("support_staff"))
+    response = client.get(
+        "/search", params={"q": "Readable"}, headers=auth_headers("support_staff", organization_id=org.id)
+    )
 
     assert response.status_code == 200
     assert len(response.json()) == 1
+
+
+def test_search_does_not_cross_organizations(client: TestClient, auth_headers) -> None:
+    org_a_headers = auth_headers("attorney", email="a@example.com")
+    client.post("/matters", json={"name": "Org A Matter"}, headers=org_a_headers)
+
+    org_b_headers = auth_headers("attorney", email="b@example.com")
+    response = client.get("/search", params={"q": "Org A"}, headers=org_b_headers)
+
+    assert response.status_code == 200
+    assert response.json() == []
