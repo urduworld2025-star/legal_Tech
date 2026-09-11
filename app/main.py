@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.auth import router as auth_router
+from app.api.routes.billing import router as billing_router
 from app.api.routes.documents import router as documents_router
 from app.api.routes.dockets import router as dockets_router
 from app.api.routes.matters import router as matters_router
@@ -16,6 +17,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(auth_router)
+app.include_router(billing_router)
 app.include_router(documents_router)
 app.include_router(dockets_router)
 app.include_router(matters_router)
