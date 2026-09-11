@@ -9,6 +9,7 @@ import { MattersListPage } from "./pages/MattersListPage";
 import { MatterDetailPage } from "./pages/MatterDetailPage";
 import { QuickAnalyzePage } from "./pages/QuickAnalyzePage";
 import { AdminPage } from "./pages/AdminPage";
+import { BillingPage } from "./pages/BillingPage";
 import { SearchResultsPage } from "./pages/SearchResultsPage";
 import styles from "./App.module.css";
 
@@ -73,6 +74,14 @@ export default function App() {
           element={
             <RequireAuth>
               <AdminPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/billing"
+          element={
+            <RequireAuth>
+              <BillingPage />
             </RequireAuth>
           }
         />

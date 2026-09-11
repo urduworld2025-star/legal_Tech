@@ -24,11 +24,12 @@ analysis, docket checks, and report downloads are not logged). Encryption
 at rest for stored documents/results is explicitly deferred, tracked as a
 separate future decision.
 
-**Multi-tenancy**: the app now supports public self-registration into
-isolated organizations (Phase 1 of a 3-phase plan — see "Authentication /
-RBAC / Organizations" below). Every registrant lands on a permanent free
-plan; Stripe billing (Phase 2) and a platform-admin panel for managing every
-organization's subscription (Phase 3) aren't built yet.
+**Multi-tenancy**: the app supports public self-registration into isolated
+organizations (Phase 1 of a 3-phase plan — see "Authentication / RBAC /
+Organizations" below), and real Stripe subscription billing (Phase 2 — see
+"Billing (Stripe)" below). Every registrant lands on a permanent free plan
+until an attorney upgrades it. A platform-admin panel for managing every
+organization's subscription across the whole app (Phase 3) isn't built yet.
 
 **Caveat:** the classifier's "Other" class is a placeholder proxy (trained on
 generic news-article text), not a validated eDiscovery document-type
@@ -249,10 +250,55 @@ database on every request rather than trusting a role/org baked into the
 token, so deactivating a user (or changing their org) takes effect
 immediately without a token blacklist.
 
-**Not built yet**: Stripe billing (every organization is on a permanent free
-plan today — the schema has unused `plan`/`subscription_status`/`stripe_*`
-columns ready for it) and a platform-admin panel for viewing/managing every
-organization's subscription across the whole app.
+**Not built yet**: a platform-admin panel for viewing/managing every
+organization's subscription across the whole app (Phase 3 — see plan
+history).
+
+## Billing (Stripe)
+
+Every organization starts on the free plan (no card required). An attorney
+can upgrade to the "Pro" plan from the frontend's `/billing` page — this
+redirects to Stripe-hosted Checkout, and a webhook activates the plan once
+payment completes. Managing/cancelling an existing subscription also
+redirects to Stripe's hosted Customer Portal — this app has no custom
+card-collection UI at all.
+
+Set these in `.env` (get them from the [Stripe
+Dashboard](https://dashboard.stripe.com), test mode to start):
+
+```
+STRIPE_SECRET_KEY=sk_test_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+STRIPE_PRICE_ID_PRO=price_...
+FRONTEND_BASE_URL=http://localhost:5173   # or your deployed frontend URL
+```
+
+`STRIPE_PRICE_ID_PRO` comes from a Product + recurring Price you create
+yourself in **Product catalog → + Add product** (copy the **Price ID**,
+which starts with `price_`, not the Product ID). Without these set, `POST
+/billing/checkout-session` and `/billing/portal-session` return `503`
+rather than failing unpredictably — the app runs fine with billing simply
+unconfigured.
+
+**Webhook setup** — in the Stripe Dashboard, **Developers → Webhooks → +
+Add endpoint**, pointed at:
+
+```
+https://<your-deployed-domain>/legal_document/billing/webhook
+```
+
+(or `http://127.0.0.1:8000/billing/webhook` locally via the [Stripe
+CLI](https://stripe.com/docs/stripe-cli)'s `stripe listen --forward-to
+localhost:8000/billing/webhook`, which also prints a `whsec_...` value for
+`STRIPE_WEBHOOK_SECRET`). Select these events:
+
+- `checkout.session.completed` — activates the plan
+- `customer.subscription.updated` — syncs status (e.g. past-due)
+- `customer.subscription.deleted` — reverts the org to the free plan
+- `invoice.payment_failed` — marks the org past-due
+
+Every other event type Stripe sends is accepted (200) and ignored — this
+app only acts on the four above.
 
 ## Run the API
 

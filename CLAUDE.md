@@ -80,16 +80,18 @@ Start with these 4 before expanding to all 41 CUAD categories:
   JWT auth, 3 roles, route-level enforcement, audit trail). Encrypted
   storage at rest is a deliberate, tracked follow-up, not forgotten — see
   README's "Authentication / RBAC" section.
-- Multi-tenancy: the app now supports self-registration into isolated
+- Multi-tenancy: the app supports self-registration into isolated
   organizations (each registrant gets their own matters/documents/dockets/
   users, like separate law firms each with their own account) — see
   `src/legalintel/organizations/` and `app/core/security.py`'s
-  `get_current_org_user` in the Architecture section below. Stripe billing
-  and a platform-admin panel (for viewing/managing every org's subscription)
-  are deliberately not built yet — organizations currently sit on a
-  permanent free plan with no payment concept wired up. The `organizations`
-  table already has unused `plan`/`subscription_status`/`stripe_*` columns
-  so adding either later is additive, not another schema migration.
+  `get_current_org_user` in the Architecture section below. Real Stripe
+  subscription billing is wired up too (`src/legalintel/billing/`,
+  `app/api/routes/billing.py`) — every org starts on a permanent free plan;
+  an attorney can upgrade via Stripe Checkout from `/billing`, and a webhook
+  is the source of truth for plan/subscription state, not client-side
+  confirmation. A platform-admin panel (for viewing/managing every org's
+  subscription across the whole app, not just your own) is deliberately not
+  built yet — see plan history for that phase.
 
 ## Non-goals for now
 - Do not attempt full 41-category CUAD coverage until the 4-category
@@ -267,15 +269,49 @@ importable core library the API calls into. `pyproject.toml` puts both
   `organizations` then `users` in a single `connect()` block so a crash
   mid-way never leaves an org with no owner; used by `/auth/register` and by
   `scripts/create_admin.py`), `create_organization` (standalone, no owner —
-  used by tests and future platform-admin tooling), `get_organization`.
-  `src/legalintel/models/organization.py` holds the `Organization` pydantic
-  model (`plan`/`subscription_status`/`stripe_*` fields exist in the schema
-  now but are unused by any Phase 1 code path — always `'free'`/`'active'`/
-  `NULL` — so a future Stripe-billing phase is additive, not another
-  migration). Platform-admin accounts (`is_platform_admin=1`,
-  `organization_id=NULL`) are a separate, not-yet-built concept — see
-  `get_current_org_user` above for how they're already fenced off from
-  tenant routes even before that admin surface exists.
+  used by tests and future platform-admin tooling), `get_organization`,
+  `get_organization_by_stripe_customer_id`/`_by_stripe_subscription_id`
+  (used by the webhook handlers below to map a Stripe event back to an org),
+  and `update_organization(db_path, organization_id, **fields)` (allow-lists
+  `{"plan", "subscription_status", "stripe_customer_id",
+  "stripe_subscription_id"}`, raises `ValueError` on anything else — not a
+  general-purpose setter, only ever called by
+  `legalintel.billing.webhook_handlers`). `src/legalintel/models/organization.py`
+  holds the `Organization` pydantic model. Platform-admin accounts
+  (`is_platform_admin=1`, `organization_id=NULL`) are a separate, not-yet-built
+  concept — see `get_current_org_user` above for how they're already fenced
+  off from tenant routes even before that admin surface exists.
+- `src/legalintel/billing/` — `stripe_client.py` is a thin wrapper around the
+  `stripe` SDK (`create_checkout_session`, `create_portal_session`,
+  `construct_webhook_event`), passing `api_key=` as a per-call kwarg rather
+  than mutating the `stripe.api_key` module global, since FastAPI's sync
+  routes run in a threadpool and a shared mutable global would race under
+  concurrent requests. `webhook_handlers.py` has one function per handled
+  Stripe event type (`handle_checkout_completed`,
+  `handle_subscription_updated`, `handle_subscription_deleted`,
+  `handle_invoice_payment_failed`), each doing 1-2 `organizations_db` writes
+  and silently no-op-ing if the org lookup fails (e.g. a stale/replayed
+  event) rather than raising — a webhook handler failing loudly just means
+  Stripe retries it, which doesn't help if the org is genuinely gone.
+  `handle_checkout_completed` reads the organization id from the Checkout
+  Session's `metadata`, falling back to `client_reference_id` — both are set
+  by `app/api/routes/billing.py::create_checkout_session` on purpose,
+  redundantly, since a missed org id on a real payment is worse than one
+  extra field. `app/api/routes/billing.py`: `GET /billing/status` (any org
+  member, read-only), `POST /billing/checkout-session`/`/portal-session`
+  (attorney-only — `require_role("attorney")` — 503 if Stripe isn't
+  configured, matching `JWT_SECRET_KEY`'s 503 pattern in
+  `app/core/security.py`), and `POST /billing/webhook` (fully public — no
+  auth dependency, since Stripe can't send a JWT; verifies the
+  `Stripe-Signature` header via `stripe_client.construct_webhook_event`
+  instead, 400 on `InvalidWebhookSignatureError`; unhandled event types are
+  silently accepted with 200 rather than erroring, since Stripe sends many
+  event types this app doesn't act on and erroring would make Stripe retry
+  them forever). No Stripe.js/Elements on the frontend at all — both
+  Checkout and the Customer Portal are Stripe-hosted redirects
+  (`frontend/src/pages/BillingPage.tsx` just calls
+  `window.location.href = checkout_url`/`portal_url`), keeping
+  `package.json` free of a payment SDK.
 - `src/legalintel/auth/` — `security.py` holds pure functions with no DB/
   Settings access (`hash_password`/`verify_password` via `bcrypt`,
   `create_access_token`/`decode_access_token` via `PyJWT`, HS256, 8h expiry,
@@ -298,9 +334,14 @@ importable core library the API calls into. `pyproject.toml` puts both
 - `app/core/config.py` — single `Settings` object (pydantic-settings, reads
   `.env`) with upload limits, allowed extensions, `clause_model_dir`,
   `document_classification_model_dir`, `cors_allow_origins`,
-  `courtlistener_api_token`/`courtlistener_base_url`, `jwt_secret_key`, and
-  `db_path` (shared SQLite file for dockets + matters + auth — see
-  `storage.py` below).
+  `courtlistener_api_token`/`courtlistener_base_url`, `jwt_secret_key`,
+  `db_path` (shared SQLite file for dockets + matters + auth + organizations
+  — see `storage.py` below), and the Stripe billing fields
+  (`stripe_secret_key`/`stripe_webhook_secret`/`stripe_price_id_pro`, all
+  `None` by default so billing routes 503 rather than misbehave when
+  unconfigured, and `frontend_base_url` — needed server-side to build
+  Checkout/Portal `success_url`/`cancel_url`/`return_url`, which must point
+  at the frontend, not this API).
 - `src/legalintel/ingestion/` — `pdf_parser.py` (pdfplumber) and
   `docx_parser.py` (python-docx) each return a list of `ParsedPage`;
   `pipeline.py` dispatches by file extension and joins pages into a
@@ -489,7 +530,12 @@ importable core library the API calls into. `pyproject.toml` puts both
   passes `organization_id=make_org().id` to both calls for exactly this
   reason). `tests/matters/test_org_isolation.py` and
   `tests/docket/test_org_isolation.py` are the dedicated cross-org isolation
-  suites (a category that didn't exist before multi-tenancy). Model-backed
+  suites (a category that didn't exist before multi-tenancy). `tests/billing/`
+  never hits real Stripe — `test_routes_billing.py` monkeypatches
+  `app.api.routes.billing.stripe_client`'s functions directly (same
+  call-site-patching convention as `tests/docket/conftest.py`'s
+  `patch_courtlistener_client`), and `test_webhook_handlers.py` tests each
+  handler as a pure function against hand-built event-data dicts. Model-backed
   test packages (`tests/extraction/`, `tests/classification/`) each have a
   `conftest.py` that builds a throwaway untrained-head model from the base
   checkpoint, so tests exercise the code path without needing real trained
@@ -521,15 +567,21 @@ importable core library the API calls into. `pyproject.toml` puts both
   (`QuickAnalyzePage` — today's original ephemeral flow, kept but relocated,
   always analyzes with `matterId: null` so nothing persists), `/admin`
   (`AdminPage` — attorney-only, create-user form + audit-log table),
-  `/search` (`SearchResultsPage` — reads `?q=` from the URL rather than
+  `/billing` (`BillingPage` — visible to any authenticated user, not just
+  attorneys, since paralegal/support-staff should be able to see their
+  org's plan even though only `role === "attorney"` sees the actual
+  Upgrade/Manage-billing buttons; both buttons are a one-line
+  `window.location.href = checkout_url`/`portal_url` redirect to
+  Stripe-hosted pages, no custom payment UI), `/search`
+  (`SearchResultsPage` — reads `?q=` from the URL rather than
   component state, so the URL itself is shareable/bookmarkable; results
   grouped into Matters/Documents/Dockets sections, each linking to the
   owning matter). The search box lives in `NavBar.tsx` itself (visible on
   every authenticated page, not just a dedicated search page) and navigates
   to `/search?q=...` on submit.
-  `auth/AuthContext.tsx` holds `{user, loading, login, logout}` (backed by
-  `auth/tokenStore.ts`'s plain `localStorage` get/set/clear, not React
-  state, so `api/client.ts` can read the token without importing React);
+  `auth/AuthContext.tsx` holds `{user, loading, login, register, logout}`
+  (backed by `auth/tokenStore.ts`'s plain `localStorage` get/set/clear, not
+  React state, so `api/client.ts` can read the token without importing React);
   `api/client.ts` attaches `Authorization: Bearer <token>` to every request
   and exposes a tiny `onUnauthorized` pub-sub so a 401 from *any* call
   clears the session immediately, not just the one currently in flight.
