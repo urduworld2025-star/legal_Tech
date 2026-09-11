@@ -72,3 +72,42 @@ def get_organization(db_path: str, organization_id: int) -> Organization | None:
     with _connect(db_path) as conn:
         row = conn.execute("SELECT * FROM organizations WHERE id = ?", (organization_id,)).fetchone()
     return _row_to_organization(row) if row is not None else None
+
+
+def get_organization_by_stripe_customer_id(db_path: str, stripe_customer_id: str) -> Organization | None:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM organizations WHERE stripe_customer_id = ?", (stripe_customer_id,)
+        ).fetchone()
+    return _row_to_organization(row) if row is not None else None
+
+
+def get_organization_by_stripe_subscription_id(db_path: str, stripe_subscription_id: str) -> Organization | None:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM organizations WHERE stripe_subscription_id = ?", (stripe_subscription_id,)
+        ).fetchone()
+    return _row_to_organization(row) if row is not None else None
+
+
+_UPDATABLE_ORGANIZATION_FIELDS = {"plan", "subscription_status", "stripe_customer_id", "stripe_subscription_id"}
+
+
+def update_organization(db_path: str, organization_id: int, **fields) -> Organization | None:
+    """Used by the Stripe webhook handlers (legalintel.billing.webhook_handlers) to
+    sync plan/subscription state - not exposed as a general-purpose setter, so the
+    allow-list below is deliberately narrow."""
+    if not fields:
+        return get_organization(db_path, organization_id)
+    unknown = set(fields) - _UPDATABLE_ORGANIZATION_FIELDS
+    if unknown:
+        raise ValueError(f"Cannot update organization field(s): {sorted(unknown)}")
+
+    set_clause = ", ".join(f"{key} = ?" for key in fields)
+    with _connect(db_path) as conn:
+        conn.execute(
+            f"UPDATE organizations SET {set_clause} WHERE id = ?",  # noqa: S608 - keys from a fixed allow-list above
+            (*fields.values(), organization_id),
+        )
+        row = conn.execute("SELECT * FROM organizations WHERE id = ?", (organization_id,)).fetchone()
+    return _row_to_organization(row) if row is not None else None

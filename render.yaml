@@ -47,6 +47,14 @@ services:
         sync: false # only needed if the two repos above are private - a "read" token is enough
       - key: CORS_ALLOW_ORIGINS
         sync: false # JSON list, e.g. ["https://legalintel-frontend.onrender.com"] - set after the frontend service exists
+      - key: STRIPE_SECRET_KEY
+        sync: false # optional - see README's "Billing (Stripe)" section; billing routes 503 if unset
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_PRICE_ID_PRO
+        sync: false
+      - key: FRONTEND_BASE_URL
+        sync: false # set to the legalintel-frontend service's URL once it exists
 
   - type: web
     name: legalintel-frontend

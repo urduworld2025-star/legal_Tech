@@ -38,6 +38,12 @@ export function NavBar() {
             >
               Quick Analyze (not saved)
             </NavLink>
+            <NavLink
+              to="/billing"
+              className={({ isActive }) => `${styles.link} ${isActive ? styles.linkActive : ""}`}
+            >
+              Billing
+            </NavLink>
             {user.role === "attorney" && (
               <NavLink
                 to="/admin"
