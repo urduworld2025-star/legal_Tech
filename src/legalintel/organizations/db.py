@@ -3,7 +3,7 @@ from datetime import datetime
 
 from legalintel.auth import db as auth_db
 from legalintel.auth.db import UserRecord
-from legalintel.models.organization import Organization
+from legalintel.models.organization import Organization, OrganizationSummary
 from legalintel.storage import connect as _connect
 
 
@@ -66,6 +66,34 @@ def create_organization(db_path: str, *, name: str) -> Organization:
         )
         row = conn.execute("SELECT * FROM organizations WHERE id = ?", (cursor.lastrowid,)).fetchone()
     return _row_to_organization(row)
+
+
+def list_organizations(db_path: str) -> list[Organization]:
+    with _connect(db_path) as conn:
+        rows = conn.execute("SELECT * FROM organizations ORDER BY id").fetchall()
+    return [_row_to_organization(row) for row in rows]
+
+
+def list_organizations_with_user_counts(db_path: str) -> list[OrganizationSummary]:
+    """Platform-admin listing (app/api/routes/platform_admin.py) - a LEFT JOIN so an
+    organization with zero users (shouldn't normally happen, since
+    create_organization_with_owner always creates one, but a standalone
+    create_organization doesn't) still shows up with user_count=0 rather than being
+    silently dropped."""
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT organizations.*, COUNT(users.id) AS user_count
+            FROM organizations
+            LEFT JOIN users ON users.organization_id = organizations.id
+            GROUP BY organizations.id
+            ORDER BY organizations.id
+            """
+        ).fetchall()
+    return [
+        OrganizationSummary(**_row_to_organization(row).model_dump(), user_count=row["user_count"])
+        for row in rows
+    ]
 
 
 def get_organization(db_path: str, organization_id: int) -> Organization | None:

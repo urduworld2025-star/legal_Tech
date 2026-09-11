@@ -4,11 +4,13 @@ import { RequireAuth } from "./components/RequireAuth";
 import { RedirectIfAuthed } from "./components/RedirectIfAuthed";
 import { LandingPage } from "./pages/LandingPage";
 import { LoginPage } from "./pages/LoginPage";
+import { AdminLoginPage } from "./pages/AdminLoginPage";
 import { RegisterPage } from "./pages/RegisterPage";
 import { MattersListPage } from "./pages/MattersListPage";
 import { MatterDetailPage } from "./pages/MatterDetailPage";
 import { QuickAnalyzePage } from "./pages/QuickAnalyzePage";
 import { AdminPage } from "./pages/AdminPage";
+import { PlatformAdminPage } from "./pages/PlatformAdminPage";
 import { BillingPage } from "./pages/BillingPage";
 import { SearchResultsPage } from "./pages/SearchResultsPage";
 import styles from "./App.module.css";
@@ -42,6 +44,14 @@ export default function App() {
           element={
             <RedirectIfAuthed>
               <RegisterPage />
+            </RedirectIfAuthed>
+          }
+        />
+        <Route
+          path="/admin-login"
+          element={
+            <RedirectIfAuthed>
+              <AdminLoginPage />
             </RedirectIfAuthed>
           }
         />
@@ -82,6 +92,14 @@ export default function App() {
           element={
             <RequireAuth>
               <BillingPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/platform-admin"
+          element={
+            <RequireAuth>
+              <PlatformAdminPage />
             </RequireAuth>
           }
         />

@@ -82,7 +82,7 @@ export async function postMultipart<T>(
 
 export async function requestJson<T>(
   path: string,
-  options: { method?: "GET" | "POST" | "DELETE"; body?: unknown } = {}
+  options: { method?: "GET" | "POST" | "DELETE" | "PATCH"; body?: unknown } = {}
 ): Promise<T> {
   let response: Response;
   try {

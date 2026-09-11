@@ -6,6 +6,7 @@ from app.api.routes.billing import router as billing_router
 from app.api.routes.documents import router as documents_router
 from app.api.routes.dockets import router as dockets_router
 from app.api.routes.matters import router as matters_router
+from app.api.routes.platform_admin import router as platform_admin_router
 from app.api.routes.search import router as search_router
 from app.core.config import settings
 
@@ -21,6 +22,7 @@ app.include_router(billing_router)
 app.include_router(documents_router)
 app.include_router(dockets_router)
 app.include_router(matters_router)
+app.include_router(platform_admin_router)
 app.include_router(search_router)
 
 

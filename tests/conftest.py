@@ -94,10 +94,13 @@ def make_user(db_path: str, make_org):
 @pytest.fixture
 def auth_headers(client: TestClient, make_user):
     def _headers(
-        role: str = "attorney", email: str | None = None, organization_id: int | None = None
+        role: str = "attorney",
+        email: str | None = None,
+        organization_id: int | None = None,
+        is_platform_admin: bool = False,
     ) -> dict[str, str]:
         email = email or f"{role}@example.com"
-        make_user(email, role=role, organization_id=organization_id)
+        make_user(email, role=role, organization_id=organization_id, is_platform_admin=is_platform_admin)
         response = client.post("/auth/login", json={"email": email, "password": TEST_PASSWORD})
         token = response.json()["access_token"]
         return {"Authorization": f"Bearer {token}"}

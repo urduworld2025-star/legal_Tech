@@ -47,6 +47,15 @@ def get_current_org_user(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+def require_platform_admin(user: User = Depends(get_current_user)) -> User:
+    """Platform-admin routes (Ranksol's own staff, not any customer org) depend on
+    this instead of get_current_org_user - a platform admin has organization_id =
+    None by definition, so it deliberately builds on bare get_current_user."""
+    if not user.is_platform_admin:
+        raise HTTPException(status_code=403, detail="Requires a platform admin account.")
+    return user
+
+
 def require_role(*roles: Role):
     def _check(user: User = Depends(get_current_org_user)) -> User:
         if user.role not in roles:

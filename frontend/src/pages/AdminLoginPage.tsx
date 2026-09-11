@@ -1,15 +1,14 @@
 import { FormEvent, useState } from "react";
-import { Link, Location, useLocation, useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { ApiError } from "../api/client";
 import { formatApiError } from "../utils/formatApiError";
 import { ErrorBanner } from "../components/ErrorBanner";
 import styles from "./LoginPage.module.css";
 
-export function LoginPage() {
-  const { login } = useAuth();
+export function AdminLoginPage() {
+  const { loginAsPlatformAdmin } = useAuth();
   const navigate = useNavigate();
-  const location = useLocation();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -20,9 +19,8 @@ export function LoginPage() {
     setSubmitting(true);
     setError(null);
     try {
-      const user = await login(email.trim(), password);
-      const from = (location.state as { from?: Location })?.from?.pathname ?? "/dashboard";
-      navigate(user.is_platform_admin ? "/platform-admin" : from, { replace: true });
+      await loginAsPlatformAdmin(email.trim(), password);
+      navigate("/platform-admin", { replace: true });
     } catch (err) {
       setError(err instanceof ApiError ? formatApiError(err) : "Unexpected error.");
     } finally {
@@ -33,8 +31,8 @@ export function LoginPage() {
   return (
     <div className={styles.page}>
       <form className={styles.form} onSubmit={handleSubmit}>
-        <h1>Sign in</h1>
-        <p className={styles.subtitle}>Legal Document Intelligence</p>
+        <h1>Platform admin sign in</h1>
+        <p className={styles.subtitle}>For Ranksol staff only</p>
 
         {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
 
@@ -61,10 +59,7 @@ export function LoginPage() {
           {submitting ? "Signing in…" : "Sign in"}
         </button>
         <p className={styles.altAction}>
-          New here? <Link to="/register">Create an account</Link>
-        </p>
-        <p className={styles.altAction}>
-          <Link to="/admin-login">Login as admin</Link>
+          <Link to="/login">Back to regular sign in</Link>
         </p>
       </form>
     </div>
