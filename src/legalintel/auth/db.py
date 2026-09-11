@@ -18,6 +18,8 @@ class UserRecord(BaseModel):
     password_hash: str
     role: Role
     is_active: bool
+    organization_id: int | None
+    is_platform_admin: bool
     created_at: datetime
 
 
@@ -39,16 +41,36 @@ def _row_to_user_record(row: sqlite3.Row) -> UserRecord:
         password_hash=row["password_hash"],
         role=row["role"],
         is_active=bool(row["is_active"]),
+        organization_id=row["organization_id"],
+        is_platform_admin=bool(row["is_platform_admin"]),
         created_at=datetime.fromisoformat(row["created_at"]),
     )
 
 
-def create_user(db_path: str, *, email: str, name: str, password_hash: str, role: Role) -> UserRecord:
+def create_user(
+    db_path: str,
+    *,
+    email: str,
+    name: str,
+    password_hash: str,
+    role: Role,
+    organization_id: int | None = None,
+    is_platform_admin: bool = False,
+) -> UserRecord:
+    """`organization_id=None` is only valid for `is_platform_admin=True` accounts
+    (bootstrapped via a CLI script, not through this function's typical caller
+    `POST /auth/users`, which always forces the caller's own organization_id).
+    Registering a brand-new organization's first user goes through
+    `legalintel.organizations.db.create_organization_with_owner` instead, so the
+    org and its owner are created in one transaction - not through here."""
     created_at = datetime.now().astimezone().isoformat()
     with _connect(db_path) as conn:
         cursor = conn.execute(
-            "INSERT INTO users (email, name, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)",
-            (email, name, password_hash, role, created_at),
+            """
+            INSERT INTO users (email, name, password_hash, role, organization_id, is_platform_admin, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (email, name, password_hash, role, organization_id, int(is_platform_admin), created_at),
         )
         row = conn.execute("SELECT * FROM users WHERE id = ?", (cursor.lastrowid,)).fetchone()
     return _row_to_user_record(row)
@@ -82,20 +104,28 @@ def _row_to_audit_log_entry(row: sqlite3.Row) -> AuditLogEntry:
     )
 
 
-def log_action(db_path: str, *, user_id: int | None, action: str, detail: str | None = None) -> AuditLogEntry:
+def log_action(
+    db_path: str, *, user_id: int | None, action: str, detail: str | None = None, organization_id: int | None = None
+) -> AuditLogEntry:
+    """organization_id is None for platform-admin actions that aren't about any one
+    org (e.g. a future platform-wide event) - every org-scoped action (login, matter
+    creation, clause review, etc.) should pass the acting user's organization_id so
+    `list_audit_log` can filter to just that org."""
     created_at = datetime.now().astimezone().isoformat()
     with _connect(db_path) as conn:
         cursor = conn.execute(
-            "INSERT INTO audit_log (user_id, action, detail, created_at) VALUES (?, ?, ?, ?)",
-            (user_id, action, detail, created_at),
+            "INSERT INTO audit_log (user_id, action, detail, organization_id, created_at) VALUES (?, ?, ?, ?, ?)",
+            (user_id, action, detail, organization_id, created_at),
         )
         row = conn.execute("SELECT * FROM audit_log WHERE id = ?", (cursor.lastrowid,)).fetchone()
     return _row_to_audit_log_entry(row)
 
 
-def list_audit_log(db_path: str) -> list[AuditLogEntry]:
+def list_audit_log(db_path: str, organization_id: int) -> list[AuditLogEntry]:
     with _connect(db_path) as conn:
-        rows = conn.execute("SELECT * FROM audit_log ORDER BY id DESC").fetchall()
+        rows = conn.execute(
+            "SELECT * FROM audit_log WHERE organization_id = ? ORDER BY id DESC", (organization_id,)
+        ).fetchall()
     return [_row_to_audit_log_entry(row) for row in rows]
 
 

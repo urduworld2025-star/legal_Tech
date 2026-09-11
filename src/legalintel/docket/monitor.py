@@ -15,11 +15,12 @@ def check_docket_for_updates(
     db_path: str,
     tracked_docket_id: int,
     *,
+    organization_id: int,
     api_token: str | None,
     base_url: str,
     transport: httpx.BaseTransport | None = None,
 ) -> DocketCheckResult:
-    tracked = db.get_tracked_docket(db_path, tracked_docket_id)
+    tracked = db.get_tracked_docket(db_path, tracked_docket_id, organization_id=organization_id)
     if tracked is None:
         raise DocketNotTrackedError(f"No tracked docket with id {tracked_docket_id}")
 

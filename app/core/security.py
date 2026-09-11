@@ -35,8 +35,20 @@ def get_current_user(
     return User(**record.model_dump(exclude={"password_hash"}))
 
 
+def get_current_org_user(user: User = Depends(get_current_user)) -> User:
+    """Every tenant-scoped route (matters/documents/dockets/search) depends on this
+    instead of get_current_user. A platform-admin account (organization_id is None)
+    gets 403, not 401 - they're authenticated, just not authorized for a customer
+    org's resources. This is also what require_role builds on, so a platform-admin
+    account's placeholder `role` value never lets it slip through a role check on a
+    tenant route."""
+    if user.organization_id is None:
+        raise HTTPException(status_code=403, detail="This action requires an organization account.")
+    return user
+
+
 def require_role(*roles: Role):
-    def _check(user: User = Depends(get_current_user)) -> User:
+    def _check(user: User = Depends(get_current_org_user)) -> User:
         if user.role not in roles:
             raise HTTPException(status_code=403, detail=f"Requires role: {' or '.join(roles)}")
         return user

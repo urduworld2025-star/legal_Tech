@@ -80,6 +80,16 @@ Start with these 4 before expanding to all 41 CUAD categories:
   JWT auth, 3 roles, route-level enforcement, audit trail). Encrypted
   storage at rest is a deliberate, tracked follow-up, not forgotten — see
   README's "Authentication / RBAC" section.
+- Multi-tenancy: the app now supports self-registration into isolated
+  organizations (each registrant gets their own matters/documents/dockets/
+  users, like separate law firms each with their own account) — see
+  `src/legalintel/organizations/` and `app/core/security.py`'s
+  `get_current_org_user` in the Architecture section below. Stripe billing
+  and a platform-admin panel (for viewing/managing every org's subscription)
+  are deliberately not built yet — organizations currently sit on a
+  permanent free plan with no payment concept wired up. The `organizations`
+  table already has unused `plan`/`subscription_status`/`stripe_*` columns
+  so adding either later is additive, not another schema migration.
 
 ## Non-goals for now
 - Do not attempt full 41-category CUAD coverage until the 4-category
@@ -171,56 +181,116 @@ importable core library the API calls into. `pyproject.toml` puts both
   then runs the document-type classifier — kept as its own endpoint (not
   folded into `/extract-clauses`) since it's a separate, independent model
   and shouldn't require loading the (larger) clause-extraction model. All
-  three require `attorney` or `paralegal` (`dependencies=[Depends(require_role(...))]`)
-  — support staff is read-only across this whole app.
+  three require `attorney` or `paralegal` (`Depends(require_role(...))`, captured
+  as a `user` param so `user.organization_id` can be threaded into
+  `_require_matter`) — support staff is read-only across this whole app.
 - `app/api/routes/dockets.py` — separate router, no relation to `documents.py`.
   `POST /dockets/track`, `POST /dockets/{id}/check` require attorney/paralegal;
   `GET /dockets`, `GET /dockets/{id}/alerts`, `GET /dockets/{id}/entries` require
-  any authenticated user — thin HTTP-status mapping (503/404/409/502) over
+  any authenticated org user — thin HTTP-status mapping (503/404/409/502) over
   `legalintel.docket`'s exceptions; all persistence/business logic lives in
   `src/legalintel/docket/`, not here. `/track` validates a given `matter_id`
-  exists (404 if not) before contacting CourtListener.
+  exists in the caller's org (404 if not) before contacting CourtListener.
+  `_require_tracked_docket` 404s alerts/entries lookups for a tracked docket
+  outside the caller's org. `get_tracked_docket_by_courtlistener_id` (the
+  already-tracked 409 check) is deliberately the one docket lookup that stays
+  *not* org-scoped — `courtlistener_docket_id` carries a table-wide `UNIQUE`
+  constraint (see `storage.py` below), so a given real-world docket can only be
+  tracked by one organization platform-wide today; making that per-org needs a
+  composite unique constraint, which would require a full SQLite table
+  rebuild (deliberately not introduced) — a known, accepted Phase 1 limit.
 - `app/api/routes/matters.py` — `POST /matters` (attorney/paralegal, sets
-  `created_by` from the current user, logs `"matter_created"`), `GET /matters`
-  and `GET /matters/{id}` (any authenticated user; composed `MatterDetail`:
-  the matter plus its `legalintel.matters.db.list_matter_documents` and
+  `organization_id`/`created_by` from the current user, logs `"matter_created"`),
+  `GET /matters` and `GET /matters/{id}` (any authenticated org user, org-scoped;
+  composed `MatterDetail`: the matter plus its
+  `legalintel.matters.db.list_matter_documents` and
   `legalintel.docket.db.list_tracked_dockets_for_matter`), `DELETE /matters/{id}`
-  (attorney-only, cascades child rows via `matters_db.delete_matter` before
-  deleting the matter itself, logs `"matter_deleted"`). Also nests the
+  (attorney-only, org-scoped, cascades child rows via `matters_db.delete_matter`
+  before deleting the matter itself, logs `"matter_deleted"`). Also nests the
   clause-review endpoints here (matter-document-scoped, not a separate
-  router): `GET .../review` (any authenticated user), `POST`/`DELETE
+  router): `GET .../review` (any authenticated org user), `POST`/`DELETE
   .../review/{clause_index}` (attorney/paralegal; POST logs
   `"clause_reviewed"` and resolves the reviewer's name via `auth_db.get_user_by_id`
   for the response, since `legalintel.auth.db` only stores `reviewed_by` as
-  an id).
-- `app/api/routes/auth.py` — `POST /auth/login` (401 on bad email OR bad
-  password, always the same generic message — never reveal which one was
-  wrong; logs `"login"`), `POST /auth/logout` (204, stateless JWT so there's
-  nothing to invalidate server-side — exists purely so a `"logout"` audit
-  event has somewhere to fire from), `GET /auth/me`, `POST /auth/users`
-  (attorney-only, 201, 409 on duplicate email), `GET /auth/audit-log`
-  (attorney-only).
-- `app/api/routes/search.py` — `GET /search?q=...` (any authenticated user).
-  Thin: fetches all matters/documents/dockets and hands them to
-  `legalintel.search.search_all`; no query-specific DB filtering.
+  an id). `_require_matter_document` checks the matter belongs to the caller's
+  org *before* checking the document belongs to that matter — `matter_documents`
+  has no `organization_id` column of its own, so skipping the first check would
+  let a guessed `document_id` be reached by pairing it with someone else's
+  `matter_id`.
+- `app/api/routes/auth.py` — `POST /auth/register` (public, no auth; rate-limited
+  via `app.core.rate_limit.enforce_registration_rate_limit` since it's this
+  app's first public unauthenticated write endpoint; creates a brand-new
+  organization plus its first user, always `role="attorney"`, in one
+  transaction via `legalintel.organizations.db.create_organization_with_owner`
+  — see that module and `src/legalintel/organizations/` below), `POST
+  /auth/login` (401 on bad email OR bad password, always the same generic
+  message — never reveal which one was wrong; logs `"login"`), `POST
+  /auth/logout` (204, stateless JWT so there's nothing to invalidate
+  server-side — exists purely so a `"logout"` audit event has somewhere to
+  fire from), `GET /auth/me`, `POST /auth/users` (attorney-only, 201, 409 on
+  duplicate email, `organization_id` always forced from the caller's own
+  session — never accepted from the request body — so an attorney can only
+  ever create peers in their own org), `GET /auth/audit-log` (attorney-only,
+  org-scoped).
+- `app/api/routes/search.py` — `GET /search?q=...` (any authenticated org
+  user). Thin: fetches the caller's org's matters/documents/dockets (org
+  filtering happens here, at the fetch layer, before the free-text match) and
+  hands them to `legalintel.search.search_all`, which stays a pure,
+  tenant-unaware function; no query-specific DB filtering beyond that.
 - `app/core/security.py` — `get_current_user` (FastAPI dependency; decodes
   the bearer token, then re-fetches the user from the DB and checks
   `is_active` on *every* request rather than trusting a role embedded in the
   token, so deactivating a user takes effect immediately with no blacklist
-  needed) and `require_role(*roles)` (returns a `Depends()`-able that 403s
-  otherwise). Status mapping: no/bad/expired token or a deactivated user →
-  401 (never distinguish which, same principle as login); missing
-  `JWT_SECRET_KEY` (server misconfig) → 503; authenticated but wrong role →
-  403.
+  needed — the same re-fetch also picks up `organization_id`/`is_platform_admin`
+  fresh every request, so no JWT claim carries those either) and
+  `get_current_org_user` (wraps `get_current_user`, 403s a platform-admin
+  account — `organization_id is None` — since it's authenticated but not
+  authorized for any tenant's resources). `require_role(*roles)` now depends
+  on `get_current_org_user` rather than `get_current_user` directly, so a
+  platform-admin account's placeholder `role` (see `organizations/` below)
+  can never pass a role check on a tenant-scoped route. Status mapping:
+  no/bad/expired token or a deactivated user → 401 (never distinguish which,
+  same principle as login); missing `JWT_SECRET_KEY` (server misconfig) →
+  503; authenticated but wrong role, or a platform-admin hitting a
+  tenant-scoped route → 403.
+- `app/core/rate_limit.py` — `enforce_registration_rate_limit` (a FastAPI
+  dependency), a tiny in-process sliding-window limiter (5/hour/IP) guarding
+  `POST /auth/register`. In-process, module-level state is deliberate and
+  sufficient since production runs a single uvicorn worker (see README's
+  shared-hosting deployment notes) — no Redis dependency added for this.
+  `reset()` is a test-only hook `tests/conftest.py`'s `client` fixture calls
+  every test, since the state would otherwise leak across the whole pytest
+  session (every `TestClient` request shares the same client host).
+- `src/legalintel/organizations/` — `db.py` has
+  `create_organization_with_owner` (the one multi-table transactional write
+  in this app outside `matters_db.delete_matter`'s cascade — inserts
+  `organizations` then `users` in a single `connect()` block so a crash
+  mid-way never leaves an org with no owner; used by `/auth/register` and by
+  `scripts/create_admin.py`), `create_organization` (standalone, no owner —
+  used by tests and future platform-admin tooling), `get_organization`.
+  `src/legalintel/models/organization.py` holds the `Organization` pydantic
+  model (`plan`/`subscription_status`/`stripe_*` fields exist in the schema
+  now but are unused by any Phase 1 code path — always `'free'`/`'active'`/
+  `NULL` — so a future Stripe-billing phase is additive, not another
+  migration). Platform-admin accounts (`is_platform_admin=1`,
+  `organization_id=NULL`) are a separate, not-yet-built concept — see
+  `get_current_org_user` above for how they're already fenced off from
+  tenant routes even before that admin surface exists.
 - `src/legalintel/auth/` — `security.py` holds pure functions with no DB/
   Settings access (`hash_password`/`verify_password` via `bcrypt`,
   `create_access_token`/`decode_access_token` via `PyJWT`, HS256, 8h expiry,
-  `sub` = user id only, no refresh token). `db.py` mirrors `docket/db.py`'s/
+  `sub` = user id only, no refresh token, no org/role claim — see
+  `app/core/security.py` above for why). `db.py` mirrors `docket/db.py`'s/
   `matters/db.py`'s conventions (`db_path` first arg) for `users`,
-  `audit_log`, and `clause_reviews` — `set_clause_reviewed` is an upsert on
-  `clause_reviews`' `(matter_document_id, clause_index)` UNIQUE constraint,
-  so re-reviewing overwrites who/when (it's current-state, not a log; the
-  `audit_log` `"clause_reviewed"` entry is what preserves history).
+  `audit_log`, and `clause_reviews` — `create_user` takes `organization_id`
+  (required for every org member; `None` only valid with
+  `is_platform_admin=True`) and `is_platform_admin` keyword args now.
+  `set_clause_reviewed` is an upsert on `clause_reviews`'
+  `(matter_document_id, clause_index)` UNIQUE constraint, so re-reviewing
+  overwrites who/when (it's current-state, not a log; the `audit_log`
+  `"clause_reviewed"` entry is what preserves history). `log_action`/
+  `list_audit_log` both take `organization_id` (nullable on write, required
+  on read) so the audit log is org-scoped like everything else.
   `clause_reviews` has no FK to a clauses table since clauses aren't
   normalized (`matter_documents.result_json` is an opaque blob, existing
   convention) — `clause_index` is positional into that document's `clauses`
@@ -283,18 +353,43 @@ importable core library the API calls into. `pyproject.toml` puts both
   `_load_model` has the same local-folder-then-Hub-repo-id fallback as
   `clause_extractor.py`, for the same reason.
 - `src/legalintel/storage.py` — the single source of schema truth for every
-  SQLite table in the app (`users`, `matters` — including its
-  `created_by REFERENCES users(id)` column — `matter_documents`,
-  `tracked_dockets`, `seen_docket_entries`, `docket_alerts`, `audit_log`,
-  `clause_reviews`), plus the shared `connect(db_path)` context manager
-  (`PRAGMA foreign_keys = ON`, `sqlite3.Row` row factory, `CREATE TABLE IF
-  NOT EXISTS` re-run cheaply on every connect). `docket/db.py`,
-  `matters/db.py`, and `auth/db.py` all import `connect` from here rather
-  than defining their own — each still only queries the tables it "owns."
+  SQLite table in the app (`organizations`, `users`, `matters` — including
+  its `organization_id`/`created_by REFERENCES users(id)` columns —
+  `matter_documents`, `tracked_dockets` — including `organization_id` —
+  `seen_docket_entries`, `docket_alerts`, `audit_log` — including
+  `organization_id` — `clause_reviews`), plus the shared `connect(db_path)`
+  context manager (`PRAGMA foreign_keys = ON`, `sqlite3.Row` row factory,
+  `CREATE TABLE IF NOT EXISTS` re-run cheaply on every connect, followed by
+  `_apply_add_column_migrations` and `_backfill_legacy_organization`).
+  `_apply_add_column_migrations` is this repo's first schema change to an
+  *existing* table (`CREATE TABLE IF NOT EXISTS` alone only helps brand-new
+  databases) — `ALTER TABLE ... ADD COLUMN`, wrapped to swallow "duplicate
+  column name" so it's idempotent like everything else here; SQLite can't add
+  a `NOT NULL`/`CHECK`-constrained column to a non-empty table without a full
+  table rebuild, so `organization_id` etc. land nullable at the schema level
+  even though every *new* row is required to set one — that requirement is
+  enforced in the `*_db.py` write functions instead (deliberately not
+  introducing table-rebuild migration machinery for this).
+  `_backfill_legacy_organization` runs once (checks for any orphaned user
+  first): groups every pre-existing user/matter/tracked-docket into one new
+  "Legacy Organization" row — correct, not a hack, since that data already
+  had zero isolation from each other before organizations existed.
+  `docket/db.py`, `matters/db.py`, `auth/db.py`, and `organizations/db.py`
+  all import `connect` from here rather than defining their own — each still
+  only queries the tables it "owns."
 - `src/legalintel/docket/` — no ML, unlike everything above. `db.py` stores
   `tracked_dockets` (`matter_id` is a real `INTEGER REFERENCES matters(id)`,
-  nullable), `seen_docket_entries`, `docket_alerts`; it's the only place raw
-  SQL rows get converted to/from `legalintel.models.docket` pydantic types.
+  nullable; `organization_id` is its own column, not derived via `matter_id`,
+  specifically because `matter_id` is nullable), `seen_docket_entries`,
+  `docket_alerts`; it's the only place raw SQL rows get converted to/from
+  `legalintel.models.docket` pydantic types. Every lookup/list function
+  except `get_tracked_docket_by_courtlistener_id` (see
+  `app/api/routes/dockets.py` above for why that one stays global) takes a
+  required `organization_id` keyword arg. `docket/monitor.py`'s
+  `check_docket_for_updates` also takes `organization_id` now, threaded into
+  its own `db.get_tracked_docket` call — a 4th call site (beyond the 3 route
+  files) that needed org-scoping, found by reading the actual call graph
+  rather than assumed from the routes alone.
   `courtlistener_client.py` wraps the free CourtListener/RECAP API
   (`Authorization: Token <key>` header; 5/min-50/hr-125/day rate limit, so
   this is on-demand only, no background polling — its `_get` retries on 429
@@ -313,13 +408,23 @@ importable core library the API calls into. `pyproject.toml` puts both
   not three normalized tables — nothing yet needs cross-document clause
   querying. `app/api/routes/documents.py`'s three endpoints persist into
   this only when a caller supplies `matter_id`; omitting it keeps today's
-  fully-ephemeral behavior (parse, analyze, discard). `list_all_matter_documents`
-  (no `matter_id` filter) exists solely for `search.py` below.
+  fully-ephemeral behavior (parse, analyze, discard). `matters` has its own
+  `organization_id` column (not derived from `created_by`) since every org
+  member sees all of that org's matters, not just ones they personally
+  created — `add_matter`/`get_matter`/`list_matters`/`delete_matter` all take
+  a required `organization_id` now. `matter_documents` itself has no
+  `organization_id` column (every route validates the parent matter's org
+  first, so it doesn't need one) except `list_all_matter_documents` (no
+  `matter_id` filter, exists solely for `search.py` below), which takes
+  `organization_id` and `JOIN`s through `matters` to filter, since it has no
+  single already-validated matter to inherit scoping from.
 - `src/legalintel/search.py` — `search_all` is a pure function over
   already-fetched `Matter`/`MatterDocument`/`TrackedDocket` lists (same
   already-fetched-data convention as `risk/flagging.py` and
   `reporting/report_generator.py` — `app/api/routes/search.py` does the
-  fetching via `matters_db`/`docket_db`). Plain case-insensitive substring
+  fetching via `matters_db`/`docket_db`, org-scoped, *before* handing the
+  lists to this function, which stays tenant-unaware by design). Plain
+  case-insensitive substring
   matching (no FTS5, no ranking) against matter name/description, document
   filename, document content (re-hydrated per `analysis_type` the same way
   `report_generator.py` does), and tracked-docket case name/docket number —
@@ -360,10 +465,31 @@ importable core library the API calls into. `pyproject.toml` puts both
   `src/legalintel/models/matter.py` holds `Matter`/`MatterDocument`/
   `MatterDetail` — `MatterDocument.result` is typed as a plain `dict` here
   (it's an opaque JSON blob on the backend); the frontend re-adds precision
-  via a discriminated union on `analysis_type`.
+  via a discriminated union on `analysis_type`. `Matter` deliberately does
+  *not* expose `organization_id` (org is always implicit from the logged-in
+  caller, never something the frontend needs to read back off a matter) —
+  `User` does, since the frontend needs it for `get_current_org_user`-style
+  UI gating. `src/legalintel/models/user.py`'s `User` also carries
+  `is_platform_admin: bool` (always `False` today - no
+  platform-admin bootstrap script exists yet, see `organizations/` above) and
+  `RegisterRequest` (`organization_name`/`email`/`name`/`password`, the
+  public self-registration payload).
 - `tests/` mirrors `src/legalintel/`'s package layout. Fixtures generate
   sample PDF/DOCX files on the fly (`tests/conftest.py`, via `reportlab`/
-  `python-docx`) rather than checking in binary fixture files. Model-backed
+  `python-docx`) rather than checking in binary fixture files. Root
+  `tests/conftest.py` also has `make_org` (creates a standalone
+  `Organization`) and `make_user` (auto-creates an org when
+  `organization_id` isn't given, so every pre-multi-tenancy test keeps
+  passing unchanged — only tests that care about cross-org isolation pass
+  `organization_id` explicitly) and `auth_headers` (same auto-org behavior;
+  **two separate `auth_headers(...)` calls with no shared `organization_id`
+  land in two different organizations** — a real gotcha when writing a new
+  test that needs two roles to see the *same* data, e.g.
+  `tests/search/test_routes_search.py::test_search_visible_to_support_staff`
+  passes `organization_id=make_org().id` to both calls for exactly this
+  reason). `tests/matters/test_org_isolation.py` and
+  `tests/docket/test_org_isolation.py` are the dedicated cross-org isolation
+  suites (a category that didn't exist before multi-tenancy). Model-backed
   test packages (`tests/extraction/`, `tests/classification/`) each have a
   `conftest.py` that builds a throwaway untrained-head model from the base
   checkpoint, so tests exercise the code path without needing real trained
@@ -377,8 +503,12 @@ importable core library the API calls into. `pyproject.toml` puts both
 - `frontend/` — a Vite + React + TypeScript app with `react-router-dom`
   (`frontend/src/types/api.ts`/`docket.ts`/`matter.ts`/`user.ts`/`search.ts`
   mirror the backend pydantic models). Routes: `/` (`LandingPage`, public
-  marketing page — U.S. legal-audience copy, no fabricated stats) and
-  `/login` (`LoginPage`) both wrapped in `<RedirectIfAuthed>` (bounces an
+  marketing page — U.S. legal-audience copy, no fabricated stats), `/login`
+  (`LoginPage`), and `/register` (`RegisterPage` — organization name, name,
+  email, password/confirm; calls `AuthContext`'s `register`, which
+  auto-logs-in on success just like `login` does; reuses
+  `LoginPage.module.css` directly rather than a near-duplicate stylesheet)
+  all wrapped in `<RedirectIfAuthed>` (bounces an
   already-signed-in visitor to `/dashboard` without blocking first paint for
   anonymous ones — see `RedirectIfAuthed.tsx`); everything else is wrapped
   in `<RequireAuth>` (redirects to `/login` if no session) — `/dashboard`

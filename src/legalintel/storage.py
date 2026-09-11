@@ -1,8 +1,20 @@
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime
 
 _CREATE_TABLES = """
+CREATE TABLE IF NOT EXISTS organizations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    plan TEXT NOT NULL DEFAULT 'free' CHECK (plan IN ('free', 'pro')),
+    subscription_status TEXT NOT NULL DEFAULT 'active'
+        CHECK (subscription_status IN ('active', 'past_due', 'canceled')),
+    stripe_customer_id TEXT UNIQUE,
+    stripe_subscription_id TEXT UNIQUE,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT NOT NULL UNIQUE,
@@ -78,6 +90,61 @@ CREATE TABLE IF NOT EXISTS clause_reviews (
 """
 
 
+# SQLite's ALTER TABLE can't add a NOT NULL/CHECK-constrained column to a non-empty
+# table without a full table rebuild (a migration tool this repo has never needed and
+# isn't introducing now) - so these land as nullable at the schema level even though
+# every *new* row is required to set them. That requirement is enforced in the
+# `*_db.py` write functions (organization_id is a required keyword arg there), not
+# by the schema. `ADD COLUMN` is metadata-only in SQLite, so re-running this on every
+# connect() is cheap, matching the "just re-run CREATE TABLE IF NOT EXISTS" philosophy
+# already used above.
+_ADD_COLUMN_MIGRATIONS = [
+    ("users", "organization_id", "INTEGER REFERENCES organizations(id)"),
+    ("users", "is_platform_admin", "INTEGER NOT NULL DEFAULT 0"),
+    ("matters", "organization_id", "INTEGER"),
+    ("tracked_dockets", "organization_id", "INTEGER"),
+    ("audit_log", "organization_id", "INTEGER REFERENCES organizations(id)"),
+]
+
+
+def _apply_add_column_migrations(conn: sqlite3.Connection) -> None:
+    for table, column, decl in _ADD_COLUMN_MIGRATIONS:
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc):
+                raise
+
+
+def _backfill_legacy_organization(conn: sqlite3.Connection) -> None:
+    """One-time migration for a database that was single-tenant before organizations
+    existed (e.g. the already-deployed production DB): groups every pre-existing
+    user/matter/tracked-docket into one new "Legacy Organization" row. This is the
+    correct migration, not a hack - that data already had zero isolation from each
+    other (every user saw every matter), so putting them all in one org together
+    changes nothing about who could see what."""
+    orphans = conn.execute(
+        "SELECT COUNT(*) FROM users WHERE organization_id IS NULL AND is_platform_admin = 0"
+    ).fetchone()[0]
+    if orphans == 0:
+        return
+
+    created_at = datetime.now().astimezone().isoformat()
+    cursor = conn.execute(
+        "INSERT INTO organizations (name, plan, subscription_status, created_at) VALUES (?, 'free', 'active', ?)",
+        ("Legacy Organization", created_at),
+    )
+    organization_id = cursor.lastrowid
+    conn.execute(
+        "UPDATE users SET organization_id = ? WHERE organization_id IS NULL AND is_platform_admin = 0",
+        (organization_id,),
+    )
+    conn.execute("UPDATE matters SET organization_id = ? WHERE organization_id IS NULL", (organization_id,))
+    conn.execute(
+        "UPDATE tracked_dockets SET organization_id = ? WHERE organization_id IS NULL", (organization_id,)
+    )
+
+
 @contextmanager
 def connect(db_path: str) -> Iterator[sqlite3.Connection]:
     conn = sqlite3.connect(db_path)
@@ -85,6 +152,8 @@ def connect(db_path: str) -> Iterator[sqlite3.Connection]:
     conn.row_factory = sqlite3.Row
     try:
         conn.executescript(_CREATE_TABLES)
+        _apply_add_column_migrations(conn)
+        _backfill_legacy_organization(conn)
         yield conn
         conn.commit()
     finally:

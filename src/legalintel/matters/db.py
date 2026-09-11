@@ -17,6 +17,11 @@ def _row_to_matter(row: sqlite3.Row) -> Matter:
     )
 
 
+# Matter has no `organization_id` field on the pydantic model itself - that's an
+# internal scoping detail (see storage.py), not something callers of Matter need to
+# see once it's already been filtered by the functions below.
+
+
 def _row_to_matter_document(row: sqlite3.Row) -> MatterDocument:
     return MatterDocument(
         id=row["id"],
@@ -28,32 +33,40 @@ def _row_to_matter_document(row: sqlite3.Row) -> MatterDocument:
     )
 
 
-def add_matter(db_path: str, *, name: str, description: str | None, created_by: int | None = None) -> Matter:
+def add_matter(
+    db_path: str, *, name: str, description: str | None, organization_id: int, created_by: int | None = None
+) -> Matter:
     created_at = datetime.now().astimezone().isoformat()
     with _connect(db_path) as conn:
         cursor = conn.execute(
-            "INSERT INTO matters (name, description, created_by, created_at) VALUES (?, ?, ?, ?)",
-            (name, description, created_by, created_at),
+            "INSERT INTO matters (name, description, organization_id, created_by, created_at) VALUES (?, ?, ?, ?, ?)",
+            (name, description, organization_id, created_by, created_at),
         )
         row = conn.execute("SELECT * FROM matters WHERE id = ?", (cursor.lastrowid,)).fetchone()
     return _row_to_matter(row)
 
 
-def get_matter(db_path: str, matter_id: int) -> Matter | None:
+def get_matter(db_path: str, matter_id: int, *, organization_id: int) -> Matter | None:
     with _connect(db_path) as conn:
-        row = conn.execute("SELECT * FROM matters WHERE id = ?", (matter_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM matters WHERE id = ? AND organization_id = ?", (matter_id, organization_id)
+        ).fetchone()
     return _row_to_matter(row) if row is not None else None
 
 
-def list_matters(db_path: str) -> list[Matter]:
+def list_matters(db_path: str, *, organization_id: int) -> list[Matter]:
     with _connect(db_path) as conn:
-        rows = conn.execute("SELECT * FROM matters ORDER BY id").fetchall()
+        rows = conn.execute(
+            "SELECT * FROM matters WHERE organization_id = ? ORDER BY id", (organization_id,)
+        ).fetchall()
     return [_row_to_matter(row) for row in rows]
 
 
-def delete_matter(db_path: str, matter_id: int) -> bool:
+def delete_matter(db_path: str, matter_id: int, *, organization_id: int) -> bool:
     with _connect(db_path) as conn:
-        row = conn.execute("SELECT id FROM matters WHERE id = ?", (matter_id,)).fetchone()
+        row = conn.execute(
+            "SELECT id FROM matters WHERE id = ? AND organization_id = ?", (matter_id, organization_id)
+        ).fetchone()
         if row is None:
             return False
 
@@ -113,7 +126,17 @@ def list_matter_documents(db_path: str, matter_id: int) -> list[MatterDocument]:
     return [_row_to_matter_document(row) for row in rows]
 
 
-def list_all_matter_documents(db_path: str) -> list[MatterDocument]:
+def list_all_matter_documents(db_path: str, *, organization_id: int) -> list[MatterDocument]:
+    # matter_documents has no organization_id column of its own (see storage.py) -
+    # scope via a join through its parent matter instead.
     with _connect(db_path) as conn:
-        rows = conn.execute("SELECT * FROM matter_documents ORDER BY id").fetchall()
+        rows = conn.execute(
+            """
+            SELECT matter_documents.* FROM matter_documents
+            JOIN matters ON matters.id = matter_documents.matter_id
+            WHERE matters.organization_id = ?
+            ORDER BY matter_documents.id
+            """,
+            (organization_id,),
+        ).fetchall()
     return [_row_to_matter_document(row) for row in rows]

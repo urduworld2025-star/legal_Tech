@@ -36,8 +36,8 @@ const FEATURES = [
 const STEPS = [
   {
     n: "1",
-    title: "Sign in",
-    body: "Use your firm-issued account — attorney, paralegal, or support staff, each with different access.",
+    title: "Sign up",
+    body: "Create your firm's private workspace, then add paralegal and support-staff accounts as needed.",
   },
   {
     n: "2",
@@ -72,7 +72,10 @@ export function LandingPage() {
           <span className={styles.monogram} aria-hidden="true">LI</span>
           <span className={styles.brandText}>Legal Document Intelligence</span>
         </div>
-        <Link to="/login" className={styles.topBarSignIn}>Sign In</Link>
+        <div className={styles.topBarActions}>
+          <Link to="/login" className={styles.topBarSignIn}>Sign In</Link>
+          <Link to="/register" className={styles.topBarSignUp}>Sign Up</Link>
+        </div>
       </header>
 
       <section className={styles.hero}>
@@ -87,7 +90,8 @@ export function LandingPage() {
           anyone relies on it.
         </p>
         <div className={styles.heroActions}>
-          <Link to="/login" className={styles.primaryButton}>Sign In</Link>
+          <Link to="/register" className={styles.primaryButton}>Start free</Link>
+          <Link to="/login" className={styles.secondaryButton}>Sign In</Link>
           <a href="#how-it-works" className={styles.secondaryButton}>See how it works</a>
         </div>
       </section>
@@ -166,15 +170,18 @@ export function LandingPage() {
           ))}
         </div>
         <p className={styles.sectionBody}>
-          Every login, matter, and clause review is written to an audit trail. Accounts are provisioned by
-          your firm's administrator — there's no public sign-up, by design.
+          Every login, matter, and clause review is written to an audit trail. Sign up your firm to get a
+          private workspace, then add paralegal and support-staff accounts from there.
         </p>
       </section>
 
       <section className={styles.ctaBanner}>
         <h2>Ready to get started?</h2>
-        <Link to="/login" className={styles.primaryButton}>Sign In</Link>
-        <p className={styles.ctaNote}>New here? Contact your firm's administrator for account access.</p>
+        <div className={styles.heroActions}>
+          <Link to="/register" className={styles.primaryButton}>Start free</Link>
+          <Link to="/login" className={styles.secondaryButton}>Sign In</Link>
+        </div>
+        <p className={styles.ctaNote}>Free to start — no card required.</p>
       </section>
 
       <footer className={styles.footer}>

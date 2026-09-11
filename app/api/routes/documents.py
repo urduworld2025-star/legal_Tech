@@ -16,13 +16,14 @@ from legalintel.ingestion.pipeline import parse_document
 from legalintel.matters import db as matters_db
 from legalintel.models.document import ClauseExtractionResult, DocumentClassificationResult, ParsedDocument
 from legalintel.models.matter import AnalysisType
+from legalintel.models.user import User
 from legalintel.risk.flagging import apply_risk_flags, summarize_risk
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 
-def _require_matter(matter_id: int | None) -> None:
-    if matter_id is not None and matters_db.get_matter(settings.db_path, matter_id) is None:
+def _require_matter(matter_id: int | None, organization_id: int) -> None:
+    if matter_id is not None and matters_db.get_matter(settings.db_path, matter_id, organization_id=organization_id) is None:
         raise HTTPException(status_code=404, detail=f"No matter with id {matter_id}")
 
 
@@ -66,27 +67,25 @@ async def _parse_uploaded_file(file: UploadFile, matter_id: int | None) -> Parse
             os.unlink(tmp_path)
 
 
-@router.post("/parse", response_model=ParsedDocument, dependencies=[Depends(require_role("attorney", "paralegal"))])
+@router.post("/parse", response_model=ParsedDocument)
 async def parse_uploaded_document(
     file: UploadFile,
     matter_id: int | None = Form(default=None),
+    user: User = Depends(require_role("attorney", "paralegal")),
 ) -> ParsedDocument:
-    _require_matter(matter_id)
+    _require_matter(matter_id, user.organization_id)
     parsed = await _parse_uploaded_file(file, matter_id)
     _persist_if_matter(matter_id, parsed.source_filename, "parse", parsed)
     return parsed
 
 
-@router.post(
-    "/extract-clauses",
-    response_model=ClauseExtractionResult,
-    dependencies=[Depends(require_role("attorney", "paralegal"))],
-)
+@router.post("/extract-clauses", response_model=ClauseExtractionResult)
 async def extract_clauses_from_upload(
     file: UploadFile,
     matter_id: int | None = Form(default=None),
+    user: User = Depends(require_role("attorney", "paralegal")),
 ) -> ClauseExtractionResult:
-    _require_matter(matter_id)
+    _require_matter(matter_id, user.organization_id)
     parsed = await _parse_uploaded_file(file, matter_id)
 
     try:
@@ -101,16 +100,13 @@ async def extract_clauses_from_upload(
     return result
 
 
-@router.post(
-    "/classify",
-    response_model=DocumentClassificationResult,
-    dependencies=[Depends(require_role("attorney", "paralegal"))],
-)
+@router.post("/classify", response_model=DocumentClassificationResult)
 async def classify_uploaded_document(
     file: UploadFile,
     matter_id: int | None = Form(default=None),
+    user: User = Depends(require_role("attorney", "paralegal")),
 ) -> DocumentClassificationResult:
-    _require_matter(matter_id)
+    _require_matter(matter_id, user.organization_id)
     parsed = await _parse_uploaded_file(file, matter_id)
 
     try:
