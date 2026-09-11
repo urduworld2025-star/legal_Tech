@@ -1,9 +1,12 @@
 #!/usr/bin/env python
-"""Creates the first attorney account directly against the DB. Run once, locally,
-by a trusted operator - does NOT go through the API or issue a JWT.
+"""Creates a new organization and its first (attorney) user directly against the DB.
+Run once per organization, locally, by a trusted operator - does NOT go through the
+API or issue a JWT, and bypasses /auth/register's rate limit. This is how a
+customer's tenant gets provisioned outside the public registration flow (e.g. to
+bootstrap the very first account before any public /auth/register call could exist).
 
 Usage:
-    python scripts/create_admin.py --email you@firm.com --name "Jane Attorney"
+    python scripts/create_admin.py --org "Acme Legal" --email you@firm.com --name "Jane Attorney"
 """
 import argparse
 import getpass
@@ -12,11 +15,13 @@ import sys
 from app.core.config import settings
 from legalintel.auth import db as auth_db
 from legalintel.auth import hash_password
+from legalintel.organizations.db import create_organization_with_owner
 from legalintel.storage import init_db
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Create the first attorney user.")
+    parser = argparse.ArgumentParser(description="Create a new organization and its first attorney user.")
+    parser.add_argument("--org", required=True, help="Organization (firm) name")
     parser.add_argument("--email", required=True)
     parser.add_argument("--name", required=True)
     args = parser.parse_args()
@@ -36,14 +41,14 @@ def main() -> None:
         print("Password must be at least 8 characters.", file=sys.stderr)
         raise SystemExit(1)
 
-    user = auth_db.create_user(
+    organization, user = create_organization_with_owner(
         settings.db_path,
+        organization_name=args.org,
         email=args.email,
         name=args.name,
         password_hash=hash_password(password),
-        role="attorney",
     )
-    print(f"Created attorney user #{user.id} ({user.email}).")
+    print(f"Created organization #{organization.id} ({organization.name}) with attorney user #{user.id} ({user.email}).")
 
 
 if __name__ == "__main__":
