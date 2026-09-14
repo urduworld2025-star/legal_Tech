@@ -1,6 +1,12 @@
 import { FormEvent, useEffect, useState } from "react";
 import { useAuth } from "../auth/AuthContext";
-import { createUserInOrganization, getOrganizationDetail, listOrganizations, updateOrganizationPlan } from "../api/platformAdmin";
+import {
+  createOrganization,
+  createUserInOrganization,
+  getOrganizationDetail,
+  listOrganizations,
+  updateOrganizationPlan,
+} from "../api/platformAdmin";
 import { ApiError } from "../api/client";
 import { formatApiError } from "../utils/formatApiError";
 import { ErrorBanner } from "../components/ErrorBanner";
@@ -29,6 +35,13 @@ export function PlatformAdminPage() {
   const [newUserRole, setNewUserRole] = useState<Role>("paralegal");
   const [creatingUser, setCreatingUser] = useState(false);
   const [createdMessage, setCreatedMessage] = useState<string | null>(null);
+
+  const [newOrgName, setNewOrgName] = useState("");
+  const [newOrgOwnerName, setNewOrgOwnerName] = useState("");
+  const [newOrgOwnerEmail, setNewOrgOwnerEmail] = useState("");
+  const [newOrgOwnerPassword, setNewOrgOwnerPassword] = useState("");
+  const [creatingOrg, setCreatingOrg] = useState(false);
+  const [orgCreatedMessage, setOrgCreatedMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (!user?.is_platform_admin) return;
@@ -102,6 +115,31 @@ export function PlatformAdminPage() {
     }
   }
 
+  async function handleCreateOrganization(event: FormEvent) {
+    event.preventDefault();
+    setCreatingOrg(true);
+    setError(null);
+    setOrgCreatedMessage(null);
+    try {
+      const newOrg = await createOrganization(
+        newOrgName.trim(),
+        newOrgOwnerName.trim(),
+        newOrgOwnerEmail.trim(),
+        newOrgOwnerPassword
+      );
+      setOrganizations((prev) => [...(prev ?? []), newOrg]);
+      setOrgCreatedMessage(`Created organization "${newOrg.name}" with owner ${newOrgOwnerEmail.trim()}.`);
+      setNewOrgName("");
+      setNewOrgOwnerName("");
+      setNewOrgOwnerEmail("");
+      setNewOrgOwnerPassword("");
+    } catch (err) {
+      setError(err instanceof ApiError ? formatApiError(err) : "Unexpected error.");
+    } finally {
+      setCreatingOrg(false);
+    }
+  }
+
   async function handleSave(orgId: number) {
     const edit = edits[orgId];
     if (!edit) return;
@@ -127,6 +165,53 @@ export function PlatformAdminPage() {
       </header>
 
       {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
+
+      <section>
+        <h2>Create Organization</h2>
+        <form className={styles.createOrgForm} onSubmit={handleCreateOrganization}>
+          <input
+            type="text"
+            placeholder="Organization name"
+            value={newOrgName}
+            onChange={(e) => setNewOrgName(e.target.value)}
+            disabled={creatingOrg}
+          />
+          <input
+            type="text"
+            placeholder="Owner full name"
+            value={newOrgOwnerName}
+            onChange={(e) => setNewOrgOwnerName(e.target.value)}
+            disabled={creatingOrg}
+          />
+          <input
+            type="email"
+            placeholder="Owner email"
+            value={newOrgOwnerEmail}
+            onChange={(e) => setNewOrgOwnerEmail(e.target.value)}
+            disabled={creatingOrg}
+          />
+          <input
+            type="password"
+            placeholder="Owner temporary password"
+            value={newOrgOwnerPassword}
+            onChange={(e) => setNewOrgOwnerPassword(e.target.value)}
+            disabled={creatingOrg}
+          />
+          <button
+            type="submit"
+            disabled={
+              creatingOrg ||
+              !newOrgName.trim() ||
+              !newOrgOwnerName.trim() ||
+              !newOrgOwnerEmail.trim() ||
+              newOrgOwnerPassword.length < 8
+            }
+          >
+            {creatingOrg ? "Creating…" : "Create Organization"}
+          </button>
+        </form>
+        {orgCreatedMessage && <p className={styles.success}>{orgCreatedMessage}</p>}
+      </section>
 
       {organizations === null ? (
         <LoadingIndicator message="Loading organizations…" />
