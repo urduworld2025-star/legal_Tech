@@ -1,15 +1,17 @@
-import { useEffect, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useAuth } from "../auth/AuthContext";
-import { getOrganizationDetail, listOrganizations, updateOrganizationPlan } from "../api/platformAdmin";
+import { createUserInOrganization, getOrganizationDetail, listOrganizations, updateOrganizationPlan } from "../api/platformAdmin";
 import { ApiError } from "../api/client";
 import { formatApiError } from "../utils/formatApiError";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { LoadingIndicator } from "../components/LoadingIndicator";
 import type { OrganizationDetail, OrganizationSummary, Plan, SubscriptionStatus } from "../types/organization";
+import type { Role } from "../types/user";
 import styles from "./PlatformAdminPage.module.css";
 
 const PLANS: Plan[] = ["free", "pro"];
 const STATUSES: SubscriptionStatus[] = ["active", "past_due", "canceled"];
+const ROLES: Role[] = ["attorney", "paralegal", "support_staff"];
 
 export function PlatformAdminPage() {
   const { user } = useAuth();
@@ -20,6 +22,13 @@ export function PlatformAdminPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [edits, setEdits] = useState<Record<number, { plan: Plan; subscription_status: SubscriptionStatus }>>({});
   const [saving, setSaving] = useState<number | null>(null);
+
+  const [newUserEmail, setNewUserEmail] = useState("");
+  const [newUserName, setNewUserName] = useState("");
+  const [newUserPassword, setNewUserPassword] = useState("");
+  const [newUserRole, setNewUserRole] = useState<Role>("paralegal");
+  const [creatingUser, setCreatingUser] = useState(false);
+  const [createdMessage, setCreatedMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (!user?.is_platform_admin) return;
@@ -48,6 +57,11 @@ export function PlatformAdminPage() {
     }
     setExpandedId(orgId);
     setDetail(null);
+    setCreatedMessage(null);
+    setNewUserEmail("");
+    setNewUserName("");
+    setNewUserPassword("");
+    setNewUserRole("paralegal");
     setDetailLoading(true);
     try {
       const d = await getOrganizationDetail(orgId);
@@ -56,6 +70,35 @@ export function PlatformAdminPage() {
       setError(err instanceof ApiError ? formatApiError(err) : "Unexpected error.");
     } finally {
       setDetailLoading(false);
+    }
+  }
+
+  async function handleCreateUser(event: FormEvent, orgId: number) {
+    event.preventDefault();
+    setCreatingUser(true);
+    setError(null);
+    setCreatedMessage(null);
+    try {
+      const newUser = await createUserInOrganization(
+        orgId,
+        newUserEmail.trim(),
+        newUserName.trim(),
+        newUserPassword,
+        newUserRole
+      );
+      setDetail((prev) => (prev ? { ...prev, users: [...prev.users, newUser] } : prev));
+      setOrganizations(
+        (prev) => prev?.map((o) => (o.id === orgId ? { ...o, user_count: o.user_count + 1 } : o)) ?? null
+      );
+      setCreatedMessage(`Created ${newUser.role} account for ${newUser.email}.`);
+      setNewUserEmail("");
+      setNewUserName("");
+      setNewUserPassword("");
+      setNewUserRole("paralegal");
+    } catch (err) {
+      setError(err instanceof ApiError ? formatApiError(err) : "Unexpected error.");
+    } finally {
+      setCreatingUser(false);
     }
   }
 
@@ -154,13 +197,61 @@ export function PlatformAdminPage() {
                           {detailLoading ? (
                             <LoadingIndicator message="Loading users…" />
                           ) : detail ? (
-                            <ul className={styles.userList}>
-                              {detail.users.map((u) => (
-                                <li key={u.id}>
-                                  {u.name} — {u.email} ({u.role}) {u.is_active ? "" : "— inactive"}
-                                </li>
-                              ))}
-                            </ul>
+                            <>
+                              <ul className={styles.userList}>
+                                {detail.users.map((u) => (
+                                  <li key={u.id}>
+                                    {u.name} — {u.email} ({u.role}) {u.is_active ? "" : "— inactive"}
+                                  </li>
+                                ))}
+                              </ul>
+                              <form className={styles.createUserForm} onSubmit={(e) => handleCreateUser(e, org.id)}>
+                                <input
+                                  type="email"
+                                  placeholder="Email"
+                                  value={newUserEmail}
+                                  onChange={(e) => setNewUserEmail(e.target.value)}
+                                  disabled={creatingUser}
+                                />
+                                <input
+                                  type="text"
+                                  placeholder="Full name"
+                                  value={newUserName}
+                                  onChange={(e) => setNewUserName(e.target.value)}
+                                  disabled={creatingUser}
+                                />
+                                <input
+                                  type="password"
+                                  placeholder="Temporary password"
+                                  value={newUserPassword}
+                                  onChange={(e) => setNewUserPassword(e.target.value)}
+                                  disabled={creatingUser}
+                                />
+                                <select
+                                  value={newUserRole}
+                                  onChange={(e) => setNewUserRole(e.target.value as Role)}
+                                  disabled={creatingUser}
+                                >
+                                  {ROLES.map((r) => (
+                                    <option key={r} value={r}>
+                                      {r}
+                                    </option>
+                                  ))}
+                                </select>
+                                <button
+                                  type="submit"
+                                  disabled={
+                                    creatingUser ||
+                                    !newUserEmail.trim() ||
+                                    !newUserName.trim() ||
+                                    newUserPassword.length < 8
+                                  }
+                                >
+                                  {creatingUser ? "Creating…" : "Create User"}
+                                </button>
+                              </form>
+                              {createdMessage && <p className={styles.success}>{createdMessage}</p>}
+                            </>
                           ) : null}
                         </td>
                       </tr>

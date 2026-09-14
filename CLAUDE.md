@@ -304,14 +304,19 @@ importable core library the API calls into. `pyproject.toml` puts both
   `scripts/create_platform_admin.py` (same getpass-confirm shape as
   `create_admin.py`, no org created).
 - `app/api/routes/platform_admin.py` — router-level
-  `dependencies=[Depends(require_platform_admin)]` on all three routes:
+  `dependencies=[Depends(require_platform_admin)]` on all four routes:
   `GET /platform-admin/organizations` (`list[OrganizationSummary]`), `GET
   /platform-admin/organizations/{id}` (`OrganizationDetail`, 404 if the org
-  doesn't exist), `PATCH /platform-admin/organizations/{id}/plan` (manual
-  override, 404 if the org doesn't exist, logs `"org_plan_overridden"` via
-  `auth_db.log_action(organization_id=id)` against the **target org's** id —
-  so the override shows up in that org's own `/admin` audit log too, not
-  just a platform-side record).
+  doesn't exist), `POST /platform-admin/organizations/{id}/users` (reuses
+  `UserCreate` — support use case: a platform admin creates a user directly
+  in a customer's org, e.g. on a support call, without needing that org's
+  own attorney to do it via `POST /auth/users`; 404 for an unknown org, 409
+  on duplicate email, logs `"user_created_by_platform_admin"`), and `PATCH
+  /platform-admin/organizations/{id}/plan` (manual plan/status override, 404
+  if the org doesn't exist, logs `"org_plan_overridden"`) — both POST and
+  PATCH log via `auth_db.log_action(organization_id=id)` against the
+  **target org's** id, so the action shows up in that org's own `/admin`
+  audit log too, not just a platform-side record.
 - `src/legalintel/billing/` — `stripe_client.py` is a thin wrapper around the
   `stripe` SDK (`create_checkout_session`, `create_portal_session`,
   `construct_webhook_event`), passing `api_key=` as a per-call kwarg rather
