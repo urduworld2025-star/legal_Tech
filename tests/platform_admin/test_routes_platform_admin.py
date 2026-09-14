@@ -13,6 +13,74 @@ def test_list_organizations_as_platform_admin(client: TestClient, auth_headers) 
     assert any(o["user_count"] >= 1 for o in orgs)
 
 
+def test_create_organization_as_platform_admin(client: TestClient, auth_headers) -> None:
+    admin_headers = auth_headers("attorney", email="admin@ranksol.example", is_platform_admin=True)
+
+    response = client.post(
+        "/platform-admin/organizations",
+        json={
+            "organization_name": "Acme Legal",
+            "email": "owner@acme.example",
+            "name": "Jane Attorney",
+            "password": "password123",
+        },
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["name"] == "Acme Legal"
+    assert body["plan"] == "free"
+    assert body["user_count"] == 1
+
+    # Shows up in the listing, and the new owner can actually log in.
+    orgs = client.get("/platform-admin/organizations", headers=admin_headers).json()
+    assert any(o["id"] == body["id"] for o in orgs)
+    login = client.post("/auth/login", json={"email": "owner@acme.example", "password": "password123"})
+    assert login.status_code == 200
+    assert login.json()["user"]["organization_id"] == body["id"]
+
+    # Logged against the *new* org's own audit log.
+    owner_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    audit = client.get("/auth/audit-log", headers=owner_headers).json()
+    assert any(entry["action"] == "organization_created_by_platform_admin" for entry in audit)
+
+
+def test_create_organization_duplicate_email_returns_409(client: TestClient, auth_headers) -> None:
+    auth_headers("attorney", email="taken@example.com")
+    admin_headers = auth_headers("attorney", email="admin@ranksol.example", is_platform_admin=True)
+
+    response = client.post(
+        "/platform-admin/organizations",
+        json={"organization_name": "Acme Legal", "email": "taken@example.com", "name": "X", "password": "password123"},
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 409
+
+
+def test_create_organization_empty_name_returns_422(client: TestClient, auth_headers) -> None:
+    admin_headers = auth_headers("attorney", email="admin@ranksol.example", is_platform_admin=True)
+
+    response = client.post(
+        "/platform-admin/organizations",
+        json={"organization_name": "   ", "email": "owner@acme.example", "name": "X", "password": "password123"},
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 422
+
+
+def test_create_organization_as_regular_user_returns_403(client: TestClient, auth_headers) -> None:
+    response = client.post(
+        "/platform-admin/organizations",
+        json={"organization_name": "Acme Legal", "email": "owner@acme.example", "name": "X", "password": "password123"},
+        headers=auth_headers("attorney"),
+    )
+
+    assert response.status_code == 403
+
+
 def test_list_organizations_as_regular_user_returns_403(client: TestClient, auth_headers) -> None:
     response = client.get("/platform-admin/organizations", headers=auth_headers("attorney"))
 

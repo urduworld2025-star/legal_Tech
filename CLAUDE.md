@@ -304,19 +304,25 @@ importable core library the API calls into. `pyproject.toml` puts both
   `scripts/create_platform_admin.py` (same getpass-confirm shape as
   `create_admin.py`, no org created).
 - `app/api/routes/platform_admin.py` — router-level
-  `dependencies=[Depends(require_platform_admin)]` on all four routes:
-  `GET /platform-admin/organizations` (`list[OrganizationSummary]`), `GET
-  /platform-admin/organizations/{id}` (`OrganizationDetail`, 404 if the org
-  doesn't exist), `POST /platform-admin/organizations/{id}/users` (reuses
+  `dependencies=[Depends(require_platform_admin)]` on all five routes: `POST
+  /platform-admin/organizations` (reuses `RegisterRequest` — a platform admin
+  creating a brand-new organization + owner directly, e.g. onboarding a deal,
+  *alongside* the existing self-service `POST /auth/register` flow, not
+  replacing it; 422 on an empty org name, 409 on duplicate email, logs
+  `"organization_created_by_platform_admin"`, returns `OrganizationSummary`
+  with `user_count=1` so the frontend can append it to the list without a
+  refetch), `GET /platform-admin/organizations` (`list[OrganizationSummary]`),
+  `GET /platform-admin/organizations/{id}` (`OrganizationDetail`, 404 if the
+  org doesn't exist), `POST /platform-admin/organizations/{id}/users` (reuses
   `UserCreate` — support use case: a platform admin creates a user directly
-  in a customer's org, e.g. on a support call, without needing that org's
-  own attorney to do it via `POST /auth/users`; 404 for an unknown org, 409
-  on duplicate email, logs `"user_created_by_platform_admin"`), and `PATCH
-  /platform-admin/organizations/{id}/plan` (manual plan/status override, 404
-  if the org doesn't exist, logs `"org_plan_overridden"`) — both POST and
-  PATCH log via `auth_db.log_action(organization_id=id)` against the
-  **target org's** id, so the action shows up in that org's own `/admin`
-  audit log too, not just a platform-side record.
+  in a customer's *existing* org, e.g. on a support call, without needing
+  that org's own attorney to do it via `POST /auth/users`; 404 for an
+  unknown org, 409 on duplicate email, logs `"user_created_by_platform_admin"`),
+  and `PATCH /platform-admin/organizations/{id}/plan` (manual plan/status
+  override, 404 if the org doesn't exist, logs `"org_plan_overridden"`) — all
+  three of the non-GET routes log via `auth_db.log_action(organization_id=id)`
+  against the **target org's** id, so the action shows up in that org's own
+  `/admin` audit log too, not just a platform-side record.
 - `src/legalintel/billing/` — `stripe_client.py` is a thin wrapper around the
   `stripe` SDK (`create_checkout_session`, `create_portal_session`,
   `construct_webhook_event`), passing `api_key=` as a per-call kwarg rather

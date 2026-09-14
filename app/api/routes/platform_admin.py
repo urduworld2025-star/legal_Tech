@@ -10,7 +10,7 @@ from legalintel.models.organization import (
     OrganizationPlanOverride,
     OrganizationSummary,
 )
-from legalintel.models.user import User, UserCreate
+from legalintel.models.user import RegisterRequest, User, UserCreate
 from legalintel.organizations import db as organizations_db
 
 router = APIRouter(
@@ -21,6 +21,36 @@ router = APIRouter(
 @router.get("/organizations", response_model=list[OrganizationSummary])
 def list_organizations() -> list[OrganizationSummary]:
     return organizations_db.list_organizations_with_user_counts(settings.db_path)
+
+
+@router.post("/organizations", response_model=OrganizationSummary, status_code=201)
+def create_organization(payload: RegisterRequest, admin: User = Depends(require_platform_admin)) -> OrganizationSummary:
+    """A platform admin creating a brand-new organization directly, alongside the
+    existing self-service POST /auth/register flow (unaffected by this - both
+    paths exist: a customer can sign themselves up, or a platform admin can set
+    one up on their behalf, e.g. during onboarding a deal). Reuses RegisterRequest
+    since the payload shape is identical - org name, owner email/name/password."""
+    organization_name = payload.organization_name.strip()
+    if not organization_name:
+        raise HTTPException(status_code=422, detail="organization_name must not be empty.")
+    if auth_db.get_user_by_email(settings.db_path, payload.email) is not None:
+        raise HTTPException(status_code=409, detail=f"A user with email {payload.email} already exists.")
+
+    organization, owner = organizations_db.create_organization_with_owner(
+        settings.db_path,
+        organization_name=organization_name,
+        email=payload.email,
+        name=payload.name,
+        password_hash=hash_password(payload.password),
+    )
+    auth_db.log_action(
+        settings.db_path,
+        user_id=admin.id,
+        action="organization_created_by_platform_admin",
+        detail=f"owner_email={owner.email}",
+        organization_id=organization.id,
+    )
+    return OrganizationSummary(**organization.model_dump(), user_count=1)
 
 
 @router.get("/organizations/{organization_id}", response_model=OrganizationDetail)

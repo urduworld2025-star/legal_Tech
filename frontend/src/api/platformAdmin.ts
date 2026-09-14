@@ -6,6 +6,18 @@ export function listOrganizations(): Promise<OrganizationSummary[]> {
   return requestJson<OrganizationSummary[]>("/platform-admin/organizations");
 }
 
+export function createOrganization(
+  organizationName: string,
+  name: string,
+  email: string,
+  password: string
+): Promise<OrganizationSummary> {
+  return requestJson<OrganizationSummary>("/platform-admin/organizations", {
+    method: "POST",
+    body: { organization_name: organizationName, name, email, password },
+  });
+}
+
 export function getOrganizationDetail(organizationId: number): Promise<OrganizationDetail> {
   return requestJson<OrganizationDetail>(`/platform-admin/organizations/${organizationId}`);
 }
